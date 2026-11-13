@@ -15,6 +15,12 @@ import shutil
 import urllib.request
 import numpy as np
 
+try:
+    from scipy.signal import savgol_filter
+    HAS_SCIPY = True
+except ImportError:
+    HAS_SCIPY = False
+
 def natural_sort_key(s):
     """Sort strings containing numbers in natural human order."""
     return [int(text) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', str(s))]
@@ -81,10 +87,14 @@ def synthesize_3d_depth_pose(pose_2d):
         d2D_upper = float(np.linalg.norm(pose_2d[3] - pose_2d[1]))
         d2D_lower = float(np.linalg.norm(pose_2d[5] - pose_2d[3]))
         is_raised = pose_2d[5, 1] < 0.6 or abs(pose_2d[5, 0]) < 0.65
+        r_upper = min(1.0, max(0.0, d2D_upper / L_upper))
+        r_lower = min(1.0, max(0.0, d2D_lower / L_lower))
+        bend_upper = 1.0 - r_upper * r_upper
+        bend_lower = 1.0 - r_lower * r_lower
 
         if is_raised:
-            elbow_fwd = max(0.06, np.sqrt(max(0.0, L_upper**2 - d2D_upper**2)) * 0.65)
-            wrist_fwd = elbow_fwd + max(0.10, np.sqrt(max(0.0, L_lower**2 - d2D_lower**2)) * 0.85)
+            elbow_fwd = 0.06 + bend_upper * 0.14
+            wrist_fwd = elbow_fwd + 0.08 + bend_lower * 0.14
             # Anti-torso clipping floor
             if abs(pose_2d[5, 0]) < 0.65 and pose_2d[5, 1] < 0.6:
                 elbow_fwd = max(elbow_fwd, 0.14)
@@ -100,10 +110,14 @@ def synthesize_3d_depth_pose(pose_2d):
         d2D_upper = float(np.linalg.norm(pose_2d[4] - pose_2d[2]))
         d2D_lower = float(np.linalg.norm(pose_2d[6] - pose_2d[4]))
         is_raised = pose_2d[6, 1] < 0.6 or abs(pose_2d[6, 0]) < 0.65
+        r_upper = min(1.0, max(0.0, d2D_upper / L_upper))
+        r_lower = min(1.0, max(0.0, d2D_lower / L_lower))
+        bend_upper = 1.0 - r_upper * r_upper
+        bend_lower = 1.0 - r_lower * r_lower
 
         if is_raised:
-            elbow_fwd = max(0.06, np.sqrt(max(0.0, L_upper**2 - d2D_upper**2)) * 0.65)
-            wrist_fwd = elbow_fwd + max(0.10, np.sqrt(max(0.0, L_lower**2 - d2D_lower**2)) * 0.85)
+            elbow_fwd = 0.06 + bend_upper * 0.14
+            wrist_fwd = elbow_fwd + 0.08 + bend_lower * 0.14
             # Anti-torso clipping floor
             if abs(pose_2d[6, 0]) < 0.65 and pose_2d[6, 1] < 0.6:
                 elbow_fwd = max(elbow_fwd, 0.14)
@@ -321,6 +335,101 @@ def process_single_frame(frame_data, dim_mode):
     else:
         raise ValueError(f"Unsupported dimension mode: {dim_mode}")
 
+def _smooth_1d_channel(y):
+    """
+    Smooth a 1D trajectory using Savitzky-Golay or 2-pass Gaussian filter.
+    """
+    n = len(y)
+    if n < 3:
+        return y
+
+    if HAS_SCIPY:
+        w = 7 if n >= 7 else (n if n % 2 == 1 else n - 1)
+        if w >= 3:
+            poly = min(2, w - 1)
+            try:
+                return savgol_filter(y, window_length=w, polyorder=poly, mode='interp')
+            except Exception:
+                pass
+
+    # 2-pass Gaussian / Moving average filter (window=5)
+    kernel = np.array([0.06136, 0.24477, 0.38774, 0.24477, 0.06136], dtype=np.float32)
+    kernel = kernel / np.sum(kernel)
+    pad_w = len(kernel) // 2
+
+    # Pass 1
+    pad_y1 = np.pad(y, pad_w, mode='edge')
+    pass1 = np.convolve(pad_y1, kernel, mode='valid')
+
+    # Pass 2
+    pad_y2 = np.pad(pass1, pad_w, mode='edge')
+    pass2 = np.convolve(pad_y2, kernel, mode='valid')
+    return pass2
+
+def smooth_landmark_sequence(raw_data, dim_mode):
+    """
+    Apply Savitzky-Golay / 2-pass Gaussian temporal smoothing across the time axis
+    of each .npy sequence (shape: frames, D), while cleanly preserving missing/zero hand masks.
+    """
+    T, D = raw_data.shape
+    if T < 3:
+        return raw_data
+
+    # Map D into (num_points, C)
+    if dim_mode == 'one_hand_2d':
+        num_points, C = 29, 2
+    elif dim_mode == 'one_hand_3d':
+        num_points, C = 29, 3
+    elif dim_mode == 'two_hands_2d':
+        num_points, C = 50, 2
+    elif dim_mode == 'two_hands_3d':
+        num_points, C = 50, 3
+    elif dim_mode == 'mediapipe_1662':
+        out = np.copy(raw_data)
+        for col in range(D):
+            col_data = out[:, col]
+            if np.linalg.norm(col_data) > 1e-4:
+                out[:, col] = _smooth_1d_channel(col_data)
+        return out
+    else:
+        return raw_data
+
+    pts = raw_data.reshape(T, num_points, C).copy()
+    smoothed_pts = np.copy(pts)
+
+    # Point by point temporal smoothing across time
+    for j in range(num_points):
+        # Determine active frames for point j
+        magnitudes = np.linalg.norm(pts[:, j, :], axis=1)
+        active_mask = magnitudes > 1e-4
+
+        if not np.any(active_mask):
+            smoothed_pts[:, j, :] = 0.0
+            continue
+
+        # Find contiguous active segments [start_idx, end_idx)
+        diffs = np.diff(active_mask.astype(int))
+        starts = np.where(diffs == 1)[0] + 1
+        if active_mask[0]:
+            starts = np.insert(starts, 0, 0)
+        ends = np.where(diffs == -1)[0] + 1
+        if active_mask[-1]:
+            ends = np.append(ends, T)
+
+        for s_idx, e_idx in zip(starts, ends):
+            seg_len = e_idx - s_idx
+            if seg_len < 3:
+                continue
+
+            for c in range(C):
+                channel_seg = pts[s_idx:e_idx, j, c]
+                smoothed_pts[s_idx:e_idx, j, c] = _smooth_1d_channel(channel_seg)
+
+        # Enforce exact zeros for inactive frames
+        smoothed_pts[~active_mask, j, :] = 0.0
+
+    return smoothed_pts.reshape(T, D)
+
 def convert_motion_file(npy_path, word_name, category):
     """
     Convert a single .npy file to motion JSON dict.
@@ -355,6 +464,9 @@ def convert_motion_file(npy_path, word_name, category):
     if frames_count == 1:
         raw_data = np.repeat(raw_data, 30, axis=0)
         frames_count = 30
+
+    # Apply Savitzky-Golay / Gaussian temporal smoothing across time axis
+    raw_data = smooth_landmark_sequence(raw_data, dim_mode)
 
     frames_list = []
     for f_idx in range(frames_count):

@@ -215,14 +215,14 @@ export class SkeletonOverlay {
         const d2D_lower = Math.hypot(nx_w - nx_e, ny_w - ny_e) * this.scale;
 
         const isRaised = ny_w < 0.6 || Math.abs(nx_w) < 0.65;
-        // Bounded forward kinematics: cap extension ratio at 0.92 to prevent sqrt derivative explosion
-        const extUpper = Math.min(0.92, d2D_upper / L_upper);
-        const fwdUpper = Math.sqrt(Math.max(0.0, 1.0 - extUpper * extUpper)) * L_upper;
-        const extLower = Math.min(0.92, d2D_lower / L_lower);
-        const fwdLower = Math.sqrt(Math.max(0.0, 1.0 - extLower * extLower)) * L_lower;
+        // Smooth polynomial curve (infinitely differentiable parabola, zero derivative spike!)
+        const r_upper = THREE.MathUtils.clamp(d2D_upper / L_upper, 0.0, 1.0);
+        const r_lower = THREE.MathUtils.clamp(d2D_lower / L_lower, 0.0, 1.0);
+        const bendUpper = 1.0 - r_upper * r_upper;
+        const bendLower = 1.0 - r_lower * r_lower;
 
-        let elbowForwardZ = isRaised ? Math.max(0.06, fwdUpper * 0.65) : 0.02;
-        let wristForwardZ = isRaised ? elbowForwardZ + Math.max(0.10, fwdLower * 0.85) : 0.04;
+        let elbowForwardZ = isRaised ? (0.06 + bendUpper * 0.14) : 0.02;
+        let wristForwardZ = isRaised ? (elbowForwardZ + 0.08 + bendLower * 0.14) : 0.04;
 
         const rawElbowL = new THREE.Vector3(
           this.anchor.x + signX * nx_e * this.scale,
@@ -266,13 +266,14 @@ export class SkeletonOverlay {
         const d2D_lower = Math.hypot(nx_w - nx_e, ny_w - ny_e) * this.scale;
 
         const isRaised = ny_w < 0.6 || Math.abs(nx_w) < 0.65;
-        const extUpper = Math.min(0.92, d2D_upper / L_upper);
-        const fwdUpper = Math.sqrt(Math.max(0.0, 1.0 - extUpper * extUpper)) * L_upper;
-        const extLower = Math.min(0.92, d2D_lower / L_lower);
-        const fwdLower = Math.sqrt(Math.max(0.0, 1.0 - extLower * extLower)) * L_lower;
+        // Smooth polynomial curve (infinitely differentiable parabola, zero derivative spike!)
+        const r_upper = THREE.MathUtils.clamp(d2D_upper / L_upper, 0.0, 1.0);
+        const r_lower = THREE.MathUtils.clamp(d2D_lower / L_lower, 0.0, 1.0);
+        const bendUpper = 1.0 - r_upper * r_upper;
+        const bendLower = 1.0 - r_lower * r_lower;
 
-        let elbowForwardZ = isRaised ? Math.max(0.06, fwdUpper * 0.65) : 0.02;
-        let wristForwardZ = isRaised ? elbowForwardZ + Math.max(0.10, fwdLower * 0.85) : 0.04;
+        let elbowForwardZ = isRaised ? (0.06 + bendUpper * 0.14) : 0.02;
+        let wristForwardZ = isRaised ? (elbowForwardZ + 0.08 + bendLower * 0.14) : 0.04;
 
         const rawElbowR = new THREE.Vector3(
           this.anchor.x + signX * nx_e * this.scale,

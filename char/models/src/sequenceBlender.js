@@ -281,16 +281,16 @@ export class SequenceBlender {
     const floatIdx = ((this.currentFrameIdx % len) + len) % len;
     const idxA = Math.floor(floatIdx);
     const idxB = (idxA + 1) % len;
-    const alpha = floatIdx - idxA;
+    const frac = floatIdx - idxA;
 
     const frameA = this.blendedFrames[idxA].frame;
     const frameB = this.blendedFrames[idxB].frame;
 
-    if (!frameA || !frameB || alpha < 0.001) return frameA;
-    if (alpha > 0.999) return frameB;
+    if (!frameA || !frameB || frac < 0.001) return frameA;
+    if (frac > 0.999) return frameB;
 
-    // Smoothstep interpolation factor for continuous, stutter-free playback
-    const t = alpha * alpha * (3 - 2 * alpha);
+    // Linear sub-frame interpolation (lerp) using fractional playhead
+    const t = frac;
 
     // 1. Interpolate Pose
     const poseA = frameA.pose || [];

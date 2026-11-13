@@ -297,10 +297,11 @@ export class VRMEngine {
 
   /**
    * Solve a bone to aim towards targetDirection in world space using pure mathematics.
+   * Frame-rate independent exponential smoothing: alpha = 1.0 - Math.exp(-12.0 * deltaTime).
    * NEVER resets boneNode.quaternion to restLocalQuat during traversal!
    * Eliminates parent-child matrix oscillation and high-frequency twitching.
    */
-  alignBoneTowards(boneNode, childNode, targetDir, customSlerp = null) {
+  alignBoneTowards(boneNode, childNode, targetDir, deltaTime = 0.016) {
     if (!boneNode || !targetDir || targetDir.lengthSq() < 1e-4) return;
 
     if (!boneNode.userData.localRestDir) {
@@ -329,23 +330,19 @@ export class VRMEngine {
     // 5. Target local quaternion: targetLocalQuat = restLocalQuat * deltaLocalQuat
     const targetLocalQuat = boneNode.userData.restLocalQuat.clone().multiply(deltaLocalQuat);
 
-    // 6. Smooth slerp using persistent currentQuat
-    if (!boneNode.userData.currentQuat) {
-      boneNode.userData.currentQuat = boneNode.quaternion.clone();
-    }
+    // 6. Frame-rate independent exponential smoothing: 1.0 - Math.exp(-12.0 * deltaTime)
+    const dt = Math.max(0.001, Math.min(0.1, deltaTime));
+    const alpha = 1.0 - Math.exp(-12.0 * dt);
 
-    const sFactor = customSlerp !== null ? customSlerp : this.slerpFactor;
-    boneNode.userData.currentQuat.slerp(targetLocalQuat, sFactor);
-
-    // Update bone quaternion directly without temporary dirtying
-    boneNode.quaternion.copy(boneNode.userData.currentQuat);
-    boneNode.updateWorldMatrix(true, false);
+    // B.quaternion smoothly slerps toward targetLocalQuat from its previous smoothed frame
+    boneNode.quaternion.slerp(targetLocalQuat, alpha);
+    boneNode.updateMatrixWorld(true);
   }
 
   /**
    * Smoothly slerp an inactive arm back to a relaxed natural posture by her side.
    */
-  recoverRestPose(side) {
+  recoverRestPose(side, deltaTime = 0.016) {
     const isLeft = side === 'left';
     const upperBone = this.bones[isLeft ? VRMHumanBoneName.LeftUpperArm : VRMHumanBoneName.RightUpperArm];
     const lowerBone = this.bones[isLeft ? VRMHumanBoneName.LeftLowerArm : VRMHumanBoneName.RightLowerArm];
@@ -354,38 +351,34 @@ export class VRMEngine {
     const qRelaxedUpper = isLeft ? this.relaxedLeftUpper : this.relaxedRightUpper;
     const qRelaxedLower = isLeft ? this.relaxedLeftLower : this.relaxedRightLower;
 
-    const sFactor = 0.12;
+    const dt = Math.max(0.001, Math.min(0.1, deltaTime));
+    const alphaRest = 1.0 - Math.exp(-8.0 * dt);
 
     if (upperBone && upperBone.userData.restLocalQuat) {
       const targetQuat = upperBone.userData.restLocalQuat.clone().multiply(qRelaxedUpper);
-      if (!upperBone.userData.currentQuat) upperBone.userData.currentQuat = upperBone.quaternion.clone();
-      upperBone.userData.currentQuat.slerp(targetQuat, sFactor);
-      upperBone.quaternion.copy(upperBone.userData.currentQuat);
-      upperBone.updateWorldMatrix(true, false);
+      upperBone.quaternion.slerp(targetQuat, alphaRest);
+      upperBone.updateMatrixWorld(true);
     }
 
     if (lowerBone && lowerBone.userData.restLocalQuat) {
       const targetQuat = lowerBone.userData.restLocalQuat.clone().multiply(qRelaxedLower);
-      if (!lowerBone.userData.currentQuat) lowerBone.userData.currentQuat = lowerBone.quaternion.clone();
-      lowerBone.userData.currentQuat.slerp(targetQuat, sFactor);
-      lowerBone.quaternion.copy(lowerBone.userData.currentQuat);
-      lowerBone.updateWorldMatrix(true, false);
+      lowerBone.quaternion.slerp(targetQuat, alphaRest);
+      lowerBone.updateMatrixWorld(true);
     }
 
     if (handBone && handBone.userData.restLocalQuat) {
-      if (!handBone.userData.currentQuat) handBone.userData.currentQuat = handBone.quaternion.clone();
-      handBone.userData.currentQuat.slerp(handBone.userData.restLocalQuat, sFactor);
-      handBone.quaternion.copy(handBone.userData.currentQuat);
-      handBone.updateWorldMatrix(true, false);
+      handBone.quaternion.slerp(handBone.userData.restLocalQuat, alphaRest);
+      handBone.updateMatrixWorld(true);
     }
 
-    this.relaxFingers(side);
+    this.relaxFingers(side, dt);
   }
 
-  relaxFingers(side) {
+  relaxFingers(side, dt = 0.016) {
     const isLeft = side === 'left';
     const prefix = isLeft ? 'left' : 'right';
     const fingerNames = ['Index', 'Middle', 'Ring', 'Little', 'Thumb'];
+    const alphaRelax = 1.0 - Math.exp(-8.0 * dt);
 
     for (const f of fingerNames) {
       for (const seg of ['Proximal', 'Intermediate', 'Distal']) {
@@ -399,9 +392,8 @@ export class VRMEngine {
           // 5 degrees micro-curve inward so fingers never hyperextend backward
           const relaxedCurve = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), signZ * 0.08);
           const target = node.userData.restLocalQuat.clone().multiply(relaxedCurve);
-          if (!node.userData.currentQuat) node.userData.currentQuat = node.quaternion.clone();
-          node.userData.currentQuat.slerp(target, 0.15);
-          node.quaternion.copy(node.userData.currentQuat);
+          node.quaternion.slerp(target, alphaRelax);
+          node.updateMatrixWorld(true);
         }
       }
     }
@@ -411,14 +403,15 @@ export class VRMEngine {
    * Anatomical Wrist & Finger Solver
    * Uses load-time auto-calibrated curl signs to ensure 100% inward palm flexion.
    * Clamps against hyperextension with 0.08 rad natural micro-curve.
-   * Uses EMA temporal filtering and slerping to eliminate finger tremor.
+   * Uses deadzone + exponential low-pass filter on finger curls & smoothedPalmLen.
    */
-  solveHandAndFingers(side, skelHandWorld) {
+  solveHandAndFingers(side, skelHandWorld, deltaTime = 0.016) {
     if (!skelHandWorld || skelHandWorld.length < 21) {
-      this.recoverRestPose(side);
+      this.recoverRestPose(side, deltaTime);
       return;
     }
 
+    const dt = Math.max(0.001, Math.min(0.1, deltaTime));
     const isLeft = side === 'left';
     const prefix = isLeft ? 'left' : 'right';
 
@@ -429,19 +422,32 @@ export class VRMEngine {
     if (handNode && middleProxNode) {
       const targetHandDir = skelHandWorld[9].clone().sub(skelHandWorld[0]).normalize();
       // Shortest-arc alignment from restLocalQuat introduces ZERO twist
-      this.alignBoneTowards(handNode, middleProxNode, targetHandDir);
+      this.alignBoneTowards(handNode, middleProxNode, targetHandDir, dt);
     }
 
-    // Measure palm scale
-    const palmLen = Math.max(skelHandWorld[9].distanceTo(skelHandWorld[0]), 0.05);
+    // 2. Smooth palm length denominator across frames (smoothedPalmLen)
+    // Foreshortening of the palm never causes all 5 fingers to twitch simultaneously!
+    const rawPalmLen = Math.max(skelHandWorld[9].distanceTo(skelHandWorld[0]), 0.05);
+    const palmKey = `${prefix}SmoothedPalmLen`;
+    if (this[palmKey] === undefined) {
+      this[palmKey] = rawPalmLen;
+    } else {
+      const palmDiff = rawPalmLen - this[palmKey];
+      if (Math.abs(palmDiff) > 0.003) {
+        this[palmKey] += palmDiff * (1.0 - Math.exp(-8.0 * dt));
+      }
+    }
+    const palmLen = this[palmKey];
 
-    // 2. Solve 4 Fingers (Index, Middle, Ring, Little)
+    // 3. Solve 4 Fingers (Index, Middle, Ring, Little)
     const fingerDefs = [
       { name: 'Index', mcp: 5, pip: 6, dip: 7, tip: 8 },
       { name: 'Middle', mcp: 9, pip: 10, dip: 11, tip: 12 },
       { name: 'Ring', mcp: 13, pip: 14, dip: 15, tip: 16 },
       { name: 'Little', mcp: 17, pip: 18, dip: 19, tip: 20 }
     ];
+
+    const fingerAlpha = 1.0 - Math.exp(-12.0 * dt);
 
     for (const f of fingerDefs) {
       const pMcp = skelHandWorld[f.mcp];
@@ -454,25 +460,28 @@ export class VRMEngine {
       const extensionRatio = directDist / curveDist;
 
       // 0.0 = straight open finger, 1.0 = curled tightly into palm
-      let curlAmount = (0.84 - extensionRatio) / (0.84 - 0.28);
-      curlAmount = THREE.MathUtils.clamp(curlAmount, 0.0, 1.0);
+      let rawCurl = (0.84 - extensionRatio) / (0.84 - 0.28);
+      rawCurl = THREE.MathUtils.clamp(rawCurl, 0.0, 1.0);
 
       const proxNode = this.bones[`${prefix}${f.name}Proximal`];
       const interNode = this.bones[`${prefix}${f.name}Intermediate`];
       const distNode = this.bones[`${prefix}${f.name}Distal`];
 
-      // Temporal EMA filter on curl amount (alpha = 0.35) to eliminate high-frequency finger tremor
-      if (proxNode) {
-        if (proxNode.userData.smoothedCurl === undefined) {
-          proxNode.userData.smoothedCurl = curlAmount;
-        } else {
-          proxNode.userData.smoothedCurl = proxNode.userData.smoothedCurl * 0.65 + curlAmount * 0.35;
+      if (!proxNode) continue;
+
+      // Low-pass filter with deadzone 0.025: ignore micro-jitter
+      if (proxNode.userData.smoothedCurl === undefined) {
+        proxNode.userData.smoothedCurl = rawCurl;
+      } else {
+        const prevCurl = proxNode.userData.smoothedCurl;
+        if (Math.abs(rawCurl - prevCurl) > 0.025) {
+          proxNode.userData.smoothedCurl = prevCurl + (rawCurl - prevCurl) * (1.0 - Math.exp(-10.0 * dt));
         }
       }
-      const smoothCurl = proxNode?.userData?.smoothedCurl !== undefined ? proxNode.userData.smoothedCurl : curlAmount;
+      const smoothCurl = proxNode.userData.smoothedCurl;
 
       // Use empirical auto-calibrated sign (guaranteed to curl inward into palm!)
-      const signZ = proxNode?.userData?.curlSignZ !== undefined ? proxNode.userData.curlSignZ : (isLeft ? 1 : -1);
+      const signZ = proxNode.userData.curlSignZ !== undefined ? proxNode.userData.curlSignZ : (isLeft ? 1 : -1);
 
       // Hard clamp: base micro-curve of 0.08 rad (5 degrees) inward so fingers NEVER bend backward!
       const proxAngle = signZ * (0.08 + smoothCurl * 1.25);
@@ -484,11 +493,8 @@ export class VRMEngine {
         const qTarget = node.userData.restLocalQuat.clone().multiply(
           new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), angle)
         );
-        if (!node.userData.currentQuat) {
-          node.userData.currentQuat = node.quaternion.clone();
-        }
-        node.userData.currentQuat.slerp(qTarget, 0.40);
-        node.quaternion.copy(node.userData.currentQuat);
+        node.quaternion.slerp(qTarget, fingerAlpha);
+        node.updateMatrixWorld(true);
       };
 
       applyFingerRotation(proxNode, proxAngle);
@@ -496,24 +502,31 @@ export class VRMEngine {
       applyFingerRotation(distNode, distAngle);
     }
 
-    // 3. Solve Thumb (Points 1..4)
+    // 4. Solve Thumb (Points 1..4)
     const pThumbTip = skelHandWorld[4];
     const pIndexMcp = skelHandWorld[5];
-    const thumbDist = pThumbTip.distanceTo(pIndexMcp) / palmLen;
+    const rawThumbDist = pThumbTip.distanceTo(pIndexMcp) / palmLen;
 
-    const thumbOpen = THREE.MathUtils.clamp((thumbDist - 0.35) / 0.45, 0.0, 1.0);
-    const thumbFold = 1.0 - thumbOpen;
+    const rawThumbOpen = THREE.MathUtils.clamp((rawThumbDist - 0.35) / 0.45, 0.0, 1.0);
+    const rawThumbFold = 1.0 - rawThumbOpen;
 
     const thumbProx = this.bones[`${prefix}ThumbProximal`] || this.bones[`${prefix}ThumbMetacarpal`];
     const thumbDistNode = this.bones[`${prefix}ThumbDistal`];
 
     if (thumbProx && thumbProx.userData.restLocalQuat) {
       if (thumbProx.userData.smoothedFold === undefined) {
-        thumbProx.userData.smoothedFold = thumbFold;
-        thumbProx.userData.smoothedOpen = thumbOpen;
+        thumbProx.userData.smoothedFold = rawThumbFold;
+        thumbProx.userData.smoothedOpen = rawThumbOpen;
       } else {
-        thumbProx.userData.smoothedFold = thumbProx.userData.smoothedFold * 0.65 + thumbFold * 0.35;
-        thumbProx.userData.smoothedOpen = thumbProx.userData.smoothedOpen * 0.65 + thumbOpen * 0.35;
+        const prevFold = thumbProx.userData.smoothedFold;
+        if (Math.abs(rawThumbFold - prevFold) > 0.025) {
+          thumbProx.userData.smoothedFold = prevFold + (rawThumbFold - prevFold) * (1.0 - Math.exp(-10.0 * dt));
+        }
+
+        const prevOpen = thumbProx.userData.smoothedOpen;
+        if (Math.abs(rawThumbOpen - prevOpen) > 0.025) {
+          thumbProx.userData.smoothedOpen = prevOpen + (rawThumbOpen - prevOpen) * (1.0 - Math.exp(-10.0 * dt));
+        }
       }
       const sFold = thumbProx.userData.smoothedFold;
       const sOpen = thumbProx.userData.smoothedOpen;
@@ -529,23 +542,17 @@ export class VRMEngine {
       const qAbduct = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), curlSign * (sOpen * 0.30 - sFold * 0.30));
 
       const targetProx = thumbProx.userData.restLocalQuat.clone().multiply(qFold).multiply(qAbduct);
-      if (!thumbProx.userData.currentQuat) {
-        thumbProx.userData.currentQuat = thumbProx.quaternion.clone();
-      }
-      thumbProx.userData.currentQuat.slerp(targetProx, 0.40);
-      thumbProx.quaternion.copy(thumbProx.userData.currentQuat);
+      thumbProx.quaternion.slerp(targetProx, fingerAlpha);
+      thumbProx.updateMatrixWorld(true);
     }
 
     if (thumbDistNode && thumbDistNode.userData.restLocalQuat) {
-      const sFold = thumbProx?.userData?.smoothedFold !== undefined ? thumbProx.userData.smoothedFold : thumbFold;
+      const sFold = thumbProx?.userData?.smoothedFold !== undefined ? thumbProx.userData.smoothedFold : rawThumbFold;
       const signZ = thumbProx?.userData?.curlSignZ !== undefined ? thumbProx.userData.curlSignZ : (isLeft ? 1 : -1);
       const qTip = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), signZ * (sFold * 0.65 + 0.06));
       const targetDist = thumbDistNode.userData.restLocalQuat.clone().multiply(qTip);
-      if (!thumbDistNode.userData.currentQuat) {
-        thumbDistNode.userData.currentQuat = thumbDistNode.quaternion.clone();
-      }
-      thumbDistNode.userData.currentQuat.slerp(targetDist, 0.40);
-      thumbDistNode.quaternion.copy(thumbDistNode.userData.currentQuat);
+      thumbDistNode.quaternion.slerp(targetDist, fingerAlpha);
+      thumbDistNode.updateMatrixWorld(true);
     }
   }
 
@@ -583,18 +590,18 @@ export class VRMEngine {
       const leftHandBone = this.bones[VRMHumanBoneName.LeftHand];
 
       const targetUpperDir = poseWorld[3].clone().sub(poseWorld[1]).normalize();
-      this.alignBoneTowards(leftUpperArm, leftLowerArm, targetUpperDir);
+      this.alignBoneTowards(leftUpperArm, leftLowerArm, targetUpperDir, delta);
 
       const targetLowerDir = poseWorld[5].clone().sub(poseWorld[3]).normalize();
-      this.alignBoneTowards(leftLowerArm, leftHandBone, targetLowerDir);
+      this.alignBoneTowards(leftLowerArm, leftHandBone, targetLowerDir, delta);
 
       if (leftHandWorld) {
-        this.solveHandAndFingers('left', leftHandWorld);
+        this.solveHandAndFingers('left', leftHandWorld, delta);
       } else {
-        this.recoverRestPose('left');
+        this.recoverRestPose('left', delta);
       }
     } else {
-      this.recoverRestPose('left');
+      this.recoverRestPose('left', delta);
     }
 
     // Right Arm (Joints 2: Shoulder, 4: Elbow, 6: Wrist)
@@ -604,18 +611,18 @@ export class VRMEngine {
       const rightHandBone = this.bones[VRMHumanBoneName.RightHand];
 
       const targetUpperDir = poseWorld[4].clone().sub(poseWorld[2]).normalize();
-      this.alignBoneTowards(rightUpperArm, rightLowerArm, targetUpperDir);
+      this.alignBoneTowards(rightUpperArm, rightLowerArm, targetUpperDir, delta);
 
       const targetLowerDir = poseWorld[6].clone().sub(poseWorld[4]).normalize();
-      this.alignBoneTowards(rightLowerArm, rightHandBone, targetLowerDir);
+      this.alignBoneTowards(rightLowerArm, rightHandBone, targetLowerDir, delta);
 
       if (rightHandWorld) {
-        this.solveHandAndFingers('right', rightHandWorld);
+        this.solveHandAndFingers('right', rightHandWorld, delta);
       } else {
-        this.recoverRestPose('right');
+        this.recoverRestPose('right', delta);
       }
     } else {
-      this.recoverRestPose('right');
+      this.recoverRestPose('right', delta);
     }
 
     // 3. Natural Blinking & Facial Physics
