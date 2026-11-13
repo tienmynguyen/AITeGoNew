@@ -386,6 +386,8 @@ export class VRMEngine {
     // Max Angular Velocity Clamp: max 0.15 rad per frame (~8.6 deg at 30-60 fps)
     // Prevents sudden wild arm whipping or teleporting when landmarks flip
     const rotAngle = boneNode.quaternion.angleTo(targetLocalQuat);
+    if (rotAngle < 0.012) return; // Micro-jitter deadzone eliminates high-frequency twitching
+
     const maxStep = 0.15;
     const step = Math.min(alpha * rotAngle, maxStep);
 
@@ -542,6 +544,13 @@ export class VRMEngine {
     }
 
     // 3. Exact 3D Orthonormal Basis Alignment for Wrist (LeftHand / RightHand)
+    const rawPalmLen = Math.max(p9.distanceTo(p0), 0.05);
+    const dIdxFast = skelHandWorld[8].distanceTo(skelHandWorld[5]);
+    const dMidFast = skelHandWorld[12].distanceTo(skelHandWorld[9]);
+    const dRngFast = skelHandWorld[16].distanceTo(skelHandWorld[13]);
+    const isFistHandFast = (dIdxFast < 0.38 * rawPalmLen && dMidFast < 0.38 * rawPalmLen && dRngFast < 0.38 * rawPalmLen) ||
+                           (this[`${prefix}IsFist`] === true && dMidFast < 0.42 * rawPalmLen && dRngFast < 0.42 * rawPalmLen);
+
     const handNode = this.bones[isLeft ? VRMHumanBoneName.LeftHand : VRMHumanBoneName.RightHand];
     if (handNode && handNode.userData.restLocalQuat) {
       const v1_rest = (handNode.userData.localRestDir || new THREE.Vector3(isLeft ? 1 : -1, 0, 0)).clone().normalize();
@@ -563,15 +572,20 @@ export class VRMEngine {
         : new THREE.Quaternion();
       const targetLocalQuat = parentWorldQuat.clone().invert().multiply(targetWorldQuat);
 
-      const alphaWrist = 1.0 - Math.exp(-12.0 * dt);
       const angleWrist = handNode.quaternion.angleTo(targetLocalQuat);
-      const maxWristStep = 0.18;
-      handNode.quaternion.rotateTowards(targetLocalQuat, Math.min(alphaWrist * angleWrist, maxWristStep));
-      handNode.updateMatrixWorld(true);
+      const alphaWrist = isFistHandFast ? (1.0 - Math.exp(-6.0 * dt)) : (1.0 - Math.exp(-12.0 * dt));
+      const maxWristStep = isFistHandFast ? 0.08 : 0.18;
+
+      // Micro-jitter deadzone for clenched fist: ignore small landmark twitching (< 2 deg)
+      if (isFistHandFast && angleWrist < 0.035) {
+        // Keep wrist completely steady
+      } else {
+        handNode.quaternion.rotateTowards(targetLocalQuat, Math.min(alphaWrist * angleWrist, maxWristStep));
+        handNode.updateMatrixWorld(true);
+      }
     }
 
     // 4. Smooth palm length denominator across frames (smoothedPalmLen)
-    const rawPalmLen = Math.max(p9.distanceTo(p0), 0.05);
     const palmKey = `${prefix}SmoothedPalmLen`;
     if (this[palmKey] === undefined) {
       this[palmKey] = rawPalmLen;
@@ -696,15 +710,16 @@ export class VRMEngine {
       midM.rawCurl = 0.0;
       ringM.rawCurl = 0.0;
       litM.rawCurl = 0.0;
-    } else if (curledCount >= 3) {
-      // Clenched fist (e.g. "Tốt", fists): snap any bent finger to 1.0 and lock it
+    } else if (isFistHandFast || (curledCount >= 4) || (curledCount >= 3 && !idxM.isStraight && idxM.rawCurl > 0.45)) {
+      // Clenched fist (nắm chặt tay): snap and lock ALL fingers 100% into tight fist with zero jitter
       for (const f of fingerDefs) {
-        if (fingerMetrics[f.name].rawCurl > 0.35 || fingerMetrics[f.name].isCurled) {
-          fingerMetrics[f.name].rawCurl = 1.0;
-          fingerMetrics[f.name].isLockedCurled = true;
-        }
+        fingerMetrics[f.name].rawCurl = 1.0;
+        fingerMetrics[f.name].isLockedCurled = true;
       }
     }
+
+    const isFist = isFistHandFast || (curledCount >= 4) || (curledCount >= 3 && !idxM.isStraight && idxM.rawCurl > 0.45);
+    this[`${prefix}IsFist`] = isFist;
 
     // Pass 3: Apply smoothed curl & rotations to finger bones
     for (const f of fingerDefs) {
@@ -733,9 +748,10 @@ export class VRMEngine {
       const signZ = proxNode.userData.curlSignZ !== undefined ? proxNode.userData.curlSignZ : (isLeft ? 1 : -1);
 
       // Anatomical flexion angles:
-      const finalFlexProx = 0.05 + smoothCurl * 1.35;
-      const finalFlexInter = 0.05 + smoothCurl * 1.63;
-      const finalFlexDist = 0.05 + smoothCurl * 1.23;
+      // Tightly clenched into palm when locked curled (nắm chặt) vs smooth curl
+      const finalFlexProx = m.isLockedCurled ? 1.55 : (0.05 + smoothCurl * 1.50);
+      const finalFlexInter = m.isLockedCurled ? 1.95 : (0.05 + smoothCurl * 1.90);
+      const finalFlexDist = m.isLockedCurled ? 1.55 : (0.05 + smoothCurl * 1.50);
 
       // Knuckle plane splay: STRICTLY 0.0 when finger is curled or locked!
       // Completely eliminates lateral swinging / fluttering / đung đưa on the little finger and all curled fingers!
@@ -842,9 +858,13 @@ export class VRMEngine {
       const axisVec = axisName === 'z' ? new THREE.Vector3(0, 0, 1) :
                       axisName === 'x' ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
 
-      // Inward opposition across palm + abduction
-      const qFold = new THREE.Quaternion().setFromAxisAngle(axisVec, sign * (sFold * 0.75));
-      const qAbduct = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), sign * (sOpen * 0.35 - sFold * 0.30));
+      // Inward opposition across palm + abduction (tight fold on clenched fist)
+      const foldScaleProx = isFist ? 1.15 : 0.85;
+      const foldScaleInter = isFist ? 1.35 : 1.00;
+      const foldScaleDist = isFist ? 1.25 : 0.95;
+
+      const qFold = new THREE.Quaternion().setFromAxisAngle(axisVec, sign * (sFold * foldScaleProx));
+      const qAbduct = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), sign * (sOpen * 0.35 - sFold * 0.35));
 
       const targetProx = thumbProx.userData.restLocalQuat.clone().multiply(qFold).multiply(qAbduct);
       thumbProx.quaternion.slerp(targetProx, fingerAlpha);
@@ -857,7 +877,7 @@ export class VRMEngine {
         const interAxisVec = interAxisName === 'z' ? new THREE.Vector3(0, 0, 1) :
                              interAxisName === 'x' ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
 
-        const qFoldInter = new THREE.Quaternion().setFromAxisAngle(interAxisVec, interSign * (sFold * 0.90));
+        const qFoldInter = new THREE.Quaternion().setFromAxisAngle(interAxisVec, interSign * (sFold * foldScaleInter));
         const targetInter = thumbInter.userData.restLocalQuat.clone().multiply(qFoldInter);
         thumbInter.quaternion.slerp(targetInter, fingerAlpha);
         thumbInter.updateMatrixWorld(true);
@@ -870,7 +890,7 @@ export class VRMEngine {
         const distAxisVec = distAxisName === 'z' ? new THREE.Vector3(0, 0, 1) :
                             distAxisName === 'x' ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
 
-        const qTip = new THREE.Quaternion().setFromAxisAngle(distAxisVec, distSign * (sFold * 0.85 + 0.05));
+        const qTip = new THREE.Quaternion().setFromAxisAngle(distAxisVec, distSign * (sFold * foldScaleDist + 0.05));
         const targetDist = thumbDistNode.userData.restLocalQuat.clone().multiply(qTip);
         thumbDistNode.quaternion.slerp(targetDist, fingerAlpha);
         thumbDistNode.updateMatrixWorld(true);

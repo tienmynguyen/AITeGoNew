@@ -414,6 +414,7 @@ export class SkeletonOverlay {
 
       // Calculate finger curl ratios in 2D
       const fingerCurled = {};
+      let curledCount = 0;
       fingerChains.forEach((chain) => {
         const [mcp, pip, dip, tip] = chain;
         const direct = Math.hypot(handPoints[tip][0] - handPoints[mcp][0], handPoints[tip][1] - handPoints[mcp][1]);
@@ -425,7 +426,18 @@ export class SkeletonOverlay {
         );
         const curl = THREE.MathUtils.clamp((0.85 - direct / curve) / (0.85 - 0.30), 0.0, 1.0);
         fingerCurled[mcp] = curl;
+        if (curl >= 0.70 || direct < 0.38 * palmWidth2D) {
+          curledCount++;
+        }
       });
+
+      // Clenched fist stabilization: lock all finger curls to 1.0
+      const isFistHand = (curledCount >= 3);
+      if (isFistHand) {
+        fingerChains.forEach((chain) => {
+          fingerCurled[chain[0]] = 1.0;
+        });
+      }
 
       // Direction of inward palm curl along Z:
       // When facingFactor > 0 (palm facing camera): curls +Z
@@ -475,11 +487,16 @@ export class SkeletonOverlay {
           relZ = 0.030 * curlZDir;
         }
 
-        const w = new THREE.Vector3(
+        const rawW = new THREE.Vector3(
           wristAnchorWorld.x + signX * relX * this.scale,
           wristAnchorWorld.y - relY * this.scale,
           wristAnchorWorld.z + relZ
         );
+
+        // Filter high-frequency landmark jitter via temporal moving average
+        const map = isLeftHand ? this.smoothCache.lh : this.smoothCache.rh;
+        const smoothAlpha = isFistHand ? 0.30 : 0.55;
+        const w = this.smoothVec(map, `pt_${i}`, rawW, smoothAlpha);
 
         handWorld[i] = w;
         addJoint(w, i === 0 ? 1.0 : 0.65);
