@@ -561,6 +561,14 @@ function animate() {
   // Get current frame data
   const currentFrame = sequenceBlender.getCurrentFrame();
 
+  // Calibrate Cyan Skeleton anchor directly from VRM shoulders (Fix 1: Zero Z separation!)
+  if (vrmEngine.isLoaded) {
+    const shoulders = vrmEngine.getShoulderPositions();
+    if (shoulders) {
+      skeletonOverlay.setShoulderCalibration(shoulders.leftPos, shoulders.rightPos);
+    }
+  }
+
   // 1. Update Cyan 3D Skeleton (Untouched raw 3D depth)
   const skeletonWorldData = skeletonOverlay.update(currentFrame);
 
@@ -610,6 +618,10 @@ async function bootstrap() {
     await vrmEngine.loadModel('/models/AvatarSample_A.vrm');
     document.getElementById('model-status-text').textContent = 'AvatarSample_A.vrm (Đã sẵn sàng)';
     document.getElementById('model-dot').style.backgroundColor = 'var(--accent-green)';
+    const shoulders = vrmEngine.getShoulderPositions();
+    if (shoulders) {
+      skeletonOverlay.setShoulderCalibration(shoulders.leftPos, shoulders.rightPos);
+    }
   } catch (err) {
     console.warn('AvatarSample_A.vrm load fallback:', err);
     document.getElementById('model-status-text').textContent = 'Chế độ khung xương 3D';

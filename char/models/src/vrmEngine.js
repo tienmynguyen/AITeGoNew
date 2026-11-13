@@ -6,7 +6,7 @@ import { VRMLoaderPlugin, VRMUtils, VRMHumanBoneName } from '@pixiv/three-vrm';
  * VRM 0.0 Self-Calibrating Engine
  * Reads the 3D Cyan Skeleton positions in READ-ONLY mode.
  * Performs hierarchical arm alignment, anatomical wrist roll clamping,
- * and inward finger curling without flipping.
+ * and inward finger curling without flipping or backward hyperextension.
  */
 export class VRMEngine {
   constructor(scene) {
@@ -75,9 +75,7 @@ export class VRMEngine {
           console.log('[VRMEngine] Successfully loaded and calibrated VRM model');
           resolve(vrm);
         },
-        (progress) => {
-          // Progress callback
-        },
+        (progress) => {},
         (error) => {
           console.error('[VRMEngine] Failed to load VRM model:', error);
           reject(error);
@@ -101,6 +99,22 @@ export class VRMEngine {
         this.bones[boneName] = node;
       }
     }
+  }
+
+  /**
+   * Get actual shoulder 3D world positions of AvatarSample_A.
+   */
+  getShoulderPositions() {
+    const leftUpper = this.bones[VRMHumanBoneName.LeftUpperArm];
+    const rightUpper = this.bones[VRMHumanBoneName.RightUpperArm];
+    if (!leftUpper || !rightUpper) return null;
+
+    leftUpper.updateWorldMatrix(true, false);
+    rightUpper.updateWorldMatrix(true, false);
+
+    const leftPos = leftUpper.getWorldPosition(new THREE.Vector3());
+    const rightPos = rightUpper.getWorldPosition(new THREE.Vector3());
+    return { leftPos, rightPos };
   }
 
   setSlerpFactor(factor) {
@@ -159,7 +173,7 @@ export class VRMEngine {
     const qRelaxedUpper = isLeft ? this.relaxedLeftUpper : this.relaxedRightUpper;
     const qRelaxedLower = isLeft ? this.relaxedLeftLower : this.relaxedRightLower;
 
-    const sFactor = 0.12; // Gentle recovery
+    const sFactor = 0.12;
 
     if (upperBone && upperBone.userData.restLocalQuat) {
       const targetQuat = upperBone.userData.restLocalQuat.clone().multiply(qRelaxedUpper);
@@ -185,22 +199,28 @@ export class VRMEngine {
   relaxFingers(side) {
     const isLeft = side === 'left';
     const prefix = isLeft ? 'left' : 'right';
+    const curlSign = isLeft ? 1 : -1;
     const fingerNames = ['Index', 'Middle', 'Ring', 'Little', 'Thumb'];
+
+    // 5 degrees micro-curve inward so fingers never hyperextend backward
+    const relaxedCurve = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), curlSign * 0.08);
 
     for (const f of fingerNames) {
       for (const seg of ['Proximal', 'Intermediate', 'Distal']) {
         const boneKey = `${prefix}${f}${seg}`;
         const node = this.bones[boneKey];
         if (node && node.userData.restLocalQuat) {
-          node.quaternion.slerp(node.userData.restLocalQuat, 0.2);
+          const target = node.userData.restLocalQuat.clone().multiply(relaxedCurve);
+          node.quaternion.slerp(target, 0.2);
         }
       }
     }
   }
 
   /**
-   * Anatomical Wrist & Finger Solver
-   * Solves 4 fingers curl and thumb abduction/extension from 3D skeleton points.
+   * Anatomical Wrist & Finger Solver (Fix 3 & Fix 4)
+   * Inverts curl sign so fingers curl INWARD toward the palm, never backward!
+   * Clamps against hyperextension with 0.08 rad natural micro-curve.
    */
   solveHandAndFingers(side, skelHandWorld) {
     if (!skelHandWorld || skelHandWorld.length < 21) {
@@ -210,7 +230,11 @@ export class VRMEngine {
 
     const isLeft = side === 'left';
     const prefix = isLeft ? 'left' : 'right';
-    const sign = isLeft ? -1 : 1; // Negative Z rotation curls inward on Left, positive on Right
+
+    // Fix 3: Invert finger curl sign!
+    // For Left Hand: POSITIVE Z rotation (+curlAngle) curls inward toward palm (-Y).
+    // For Right Hand: NEGATIVE Z rotation (-curlAngle) curls inward toward palm (-Y).
+    const curlSign = isLeft ? 1 : -1;
 
     // 1. Solve Wrist: primary axis from Wrist (0) to Middle MCP (9)
     const handNode = this.bones[isLeft ? VRMHumanBoneName.LeftHand : VRMHumanBoneName.RightHand];
@@ -220,11 +244,13 @@ export class VRMEngine {
       const targetHandDir = skelHandWorld[9].clone().sub(skelHandWorld[0]).normalize();
       this.alignBoneTowards(handNode, middleProxNode, targetHandDir);
 
-      // Clamped gentle wrist roll (max ±65° / ±1.13 rad) to prevent flipping inside-out
+      // Orient palm normal so inner palm faces forward (+Z) or toward midline, NEVER backward
       const vAcross = skelHandWorld[17].clone().sub(skelHandWorld[5]).normalize();
-      const palmNormal = targetHandDir.clone().cross(vAcross).normalize();
-      const rollAngle = THREE.MathUtils.clamp(palmNormal.y * 1.1, -1.13, 1.13);
-      const qRoll = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), rollAngle * 0.5);
+      let palmNormal = targetHandDir.clone().cross(vAcross).normalize();
+
+      // Gentle roll clamping without sign flips
+      const rollAngle = THREE.MathUtils.clamp(palmNormal.y * 0.85, -0.95, 0.95);
+      const qRoll = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), rollAngle * 0.45);
       handNode.quaternion.multiply(qRoll);
     }
 
@@ -253,10 +279,11 @@ export class VRMEngine {
       let curlAmount = (0.84 - extensionRatio) / (0.84 - 0.28);
       curlAmount = THREE.MathUtils.clamp(curlAmount, 0.0, 1.0);
 
-      // Anatomical joint flexion
-      const proxAngle = sign * curlAmount * 1.30;
-      const interAngle = sign * curlAmount * 1.55;
-      const distAngle = sign * curlAmount * 1.00;
+      // Fix 3: Hard clamp against backward hyperextension!
+      // Base micro-curve of 0.08 rad (5 degrees) inward toward palm so fingers never bend backward!
+      const proxAngle = curlSign * (0.08 + curlAmount * 1.25);
+      const interAngle = curlSign * (0.08 + curlAmount * 1.50);
+      const distAngle = curlSign * (0.08 + curlAmount * 1.00);
 
       const proxNode = this.bones[`${prefix}${f.name}Proximal`];
       const interNode = this.bones[`${prefix}${f.name}Intermediate`];
@@ -277,12 +304,10 @@ export class VRMEngine {
     }
 
     // 3. Solve Thumb (Points 1..4)
-    // Distance between thumb tip (4) and Index MCP (5) determines extension/abduction
     const pThumbTip = skelHandWorld[4];
     const pIndexMcp = skelHandWorld[5];
     const thumbDist = pThumbTip.distanceTo(pIndexMcp) / palmLen;
 
-    // Extension ratio: 1.0 for thumbs-up ("tốt") / "yêu" / 5, 0.0 for folded thumb
     const thumbOpen = THREE.MathUtils.clamp((thumbDist - 0.35) / 0.45, 0.0, 1.0);
     const thumbFold = 1.0 - thumbOpen;
 
@@ -290,22 +315,19 @@ export class VRMEngine {
     const thumbDistNode = this.bones[`${prefix}ThumbDistal`];
 
     if (thumbProx && thumbProx.userData.restLocalQuat) {
-      // Inward fold angle around Y/Z
-      const qFold = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), sign * thumbFold * 0.65);
-      const qAbduct = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), sign * (thumbOpen * 0.35 - thumbFold * 0.40));
+      const qFold = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), curlSign * thumbFold * 0.55);
+      const qAbduct = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), curlSign * (thumbOpen * 0.35 - thumbFold * 0.35));
       thumbProx.quaternion.copy(thumbProx.userData.restLocalQuat).multiply(qFold).multiply(qAbduct);
     }
 
     if (thumbDistNode && thumbDistNode.userData.restLocalQuat) {
-      const qTip = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), sign * (thumbFold * 0.70));
+      const qTip = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), curlSign * (thumbFold * 0.65 + 0.06));
       thumbDistNode.quaternion.copy(thumbDistNode.userData.restLocalQuat).multiply(qTip);
     }
   }
 
   /**
    * Main Solver Entry Point: Read 3D skeleton joints in READ-ONLY mode.
-   * @param {Object} skeletonWorldData - { poseWorld, leftHandWorld, rightHandWorld }
-   * @param {number} delta - frame delta time in seconds
    */
   update(skeletonWorldData, delta = 0.016) {
     if (!this.isLoaded || !this.currentVRM || !skeletonWorldData) return;
@@ -313,13 +335,11 @@ export class VRMEngine {
     const { poseWorld, leftHandWorld, rightHandWorld } = skeletonWorldData;
     if (!poseWorld || poseWorld.length < 8) return;
 
-    // 1. Constrained Head & Neck Orientation (clamped within ±12° based on Nose position)
+    // 1. Constrained Head & Neck Orientation (clamped within ±12°)
     const headNode = this.bones[VRMHumanBoneName.Head];
-    const neckNode = this.bones[VRMHumanBoneName.Neck];
     if (headNode && poseWorld[0] && poseWorld[7]) {
       const dx = poseWorld[0].x - poseWorld[7].x;
       const dy = poseWorld[0].y - poseWorld[7].y;
-      // ±12° = ±0.21 rad
       const yaw = THREE.MathUtils.clamp(-dx * 0.6, -0.21, 0.21);
       const pitch = THREE.MathUtils.clamp((-dy - 0.21) * 0.5, -0.21, 0.21);
 
@@ -328,22 +348,18 @@ export class VRMEngine {
     }
 
     // 2. Exact Side Matching & Hierarchical Arm Alignment:
-    // Skeleton arm on right side of screen (worldX > 0) -> LeftUpperArm, LeftLowerArm, LeftHand
-    // Pose joints: 1: L_Shoulder, 3: L_Elbow, 5: L_Wrist
+    // Left Arm (Joints 1: Shoulder, 3: Elbow, 5: Wrist)
     if (poseWorld[1] && poseWorld[3] && poseWorld[5]) {
       const leftUpperArm = this.bones[VRMHumanBoneName.LeftUpperArm];
       const leftLowerArm = this.bones[VRMHumanBoneName.LeftLowerArm];
       const leftHandBone = this.bones[VRMHumanBoneName.LeftHand];
 
-      // UpperArm -> LowerArm
       const targetUpperDir = poseWorld[3].clone().sub(poseWorld[1]).normalize();
       this.alignBoneTowards(leftUpperArm, leftLowerArm, targetUpperDir);
 
-      // LowerArm -> Hand
       const targetLowerDir = poseWorld[5].clone().sub(poseWorld[3]).normalize();
       this.alignBoneTowards(leftLowerArm, leftHandBone, targetLowerDir);
 
-      // Left Hand & Fingers
       if (leftHandWorld) {
         this.solveHandAndFingers('left', leftHandWorld);
       } else {
@@ -353,22 +369,18 @@ export class VRMEngine {
       this.recoverRestPose('left');
     }
 
-    // Skeleton arm on left side of screen (worldX < 0) -> RightUpperArm, RightLowerArm, RightHand
-    // Pose joints: 2: R_Shoulder, 4: R_Elbow, 6: R_Wrist
+    // Right Arm (Joints 2: Shoulder, 4: Elbow, 6: Wrist)
     if (poseWorld[2] && poseWorld[4] && poseWorld[6]) {
       const rightUpperArm = this.bones[VRMHumanBoneName.RightUpperArm];
       const rightLowerArm = this.bones[VRMHumanBoneName.RightLowerArm];
       const rightHandBone = this.bones[VRMHumanBoneName.RightHand];
 
-      // UpperArm -> LowerArm
       const targetUpperDir = poseWorld[4].clone().sub(poseWorld[2]).normalize();
       this.alignBoneTowards(rightUpperArm, rightLowerArm, targetUpperDir);
 
-      // LowerArm -> Hand
       const targetLowerDir = poseWorld[6].clone().sub(poseWorld[4]).normalize();
       this.alignBoneTowards(rightLowerArm, rightHandBone, targetLowerDir);
 
-      // Right Hand & Fingers
       if (rightHandWorld) {
         this.solveHandAndFingers('right', rightHandWorld);
       } else {
@@ -381,7 +393,7 @@ export class VRMEngine {
     // 3. Natural Blinking & Facial Physics
     this.updateFacialExpressions(delta);
 
-    // 4. Update VRM scene internals (spring bones, physics, expressions)
+    // 4. Update VRM scene internals
     this.currentVRM.update(delta);
   }
 
@@ -398,7 +410,6 @@ export class VRMEngine {
 
     if (this.isBlinking) {
       this.blinkProgress += delta / this.blinkDuration;
-      // Triangular / smooth blink curve
       const blinkVal = this.blinkProgress < 0.5 ? this.blinkProgress * 2.0 : (1.0 - this.blinkProgress) * 2.0;
 
       if (this.blinkProgress >= 1.0) {
@@ -416,4 +427,3 @@ export class VRMEngine {
     }
   }
 }
-

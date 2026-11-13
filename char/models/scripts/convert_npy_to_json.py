@@ -52,7 +52,7 @@ def ensure_vrm_model(models_dir, workspace_root):
 
 def synthesize_3d_depth_pose(pose_2d):
     """
-    Synthesize natural 3D depth for 8 pose points:
+    Synthesize true biomechanical forward kinematic 3D depth for 8 pose points:
     0: Nose, 1: L_Shoulder, 2: R_Shoulder, 3: L_Elbow, 4: R_Elbow, 5: L_Wrist, 6: R_Wrist, 7: Mid_Shoulder
     Origin is Mid-Shoulder [0, 0, 0].
     MediaPipe depth convention: negative z is forward towards camera.
@@ -62,46 +62,64 @@ def synthesize_3d_depth_pose(pose_2d):
         pose_3d[i, 0] = pose_2d[i, 0]
         pose_3d[i, 1] = pose_2d[i, 1]
 
-    # Check if active
     if np.linalg.norm(pose_2d) < 1e-4:
         return pose_3d
 
     # Mid-shoulder origin
     pose_3d[7, 2] = 0.0
-    # Left & Right shoulders
+    # Left & Right shoulders (aligned at z = 0.0)
     pose_3d[1, 2] = 0.0
     pose_3d[2, 2] = 0.0
     # Nose slightly forward of shoulder plane
     pose_3d[0, 2] = -0.06
 
-    # Elbows natural forward flexion (z = -0.12 when active, less if resting at side)
-    for idx in [3, 4]:
-        if np.linalg.norm(pose_2d[idx]) > 1e-4:
-            y_val = pose_2d[idx, 1]
-            # y < 0.8 means arm is raised/bent
-            flex = -0.12 if y_val < 0.8 else -0.04
-            pose_3d[idx, 2] = flex
+    L_upper = 0.95
+    L_lower = 0.90
 
-    # Active wrists forward offset (z = -0.25 when raised)
-    for idx in [5, 6]:
-        if np.linalg.norm(pose_2d[idx]) > 1e-4:
-            y_val = pose_2d[idx, 1]
-            # Raised wrist in signing space
-            if y_val < 0.6:
-                pose_3d[idx, 2] = -0.25
-            elif y_val < 1.0:
-                # Interpolate between -0.25 and -0.08
-                t = (y_val - 0.6) / 0.4
-                pose_3d[idx, 2] = -0.25 * (1.0 - t) + -0.08 * t
-            else:
-                pose_3d[idx, 2] = -0.05
+    # Left Arm forward kinematic depth
+    if np.linalg.norm(pose_2d[5]) > 1e-4 or np.linalg.norm(pose_2d[3]) > 1e-4:
+        d2D_upper = float(np.linalg.norm(pose_2d[3] - pose_2d[1]))
+        d2D_lower = float(np.linalg.norm(pose_2d[5] - pose_2d[3]))
+        is_raised = pose_2d[5, 1] < 0.6 or abs(pose_2d[5, 0]) < 0.65
+
+        if is_raised:
+            elbow_fwd = max(0.06, np.sqrt(max(0.0, L_upper**2 - d2D_upper**2)) * 0.65)
+            wrist_fwd = elbow_fwd + max(0.10, np.sqrt(max(0.0, L_lower**2 - d2D_lower**2)) * 0.85)
+            # Anti-torso clipping floor
+            if abs(pose_2d[5, 0]) < 0.65 and pose_2d[5, 1] < 0.6:
+                elbow_fwd = max(elbow_fwd, 0.14)
+                wrist_fwd = max(wrist_fwd, 0.22)
+            pose_3d[3, 2] = -elbow_fwd
+            pose_3d[5, 2] = -wrist_fwd
+        else:
+            pose_3d[3, 2] = -0.03
+            pose_3d[5, 2] = -0.05
+
+    # Right Arm forward kinematic depth
+    if np.linalg.norm(pose_2d[6]) > 1e-4 or np.linalg.norm(pose_2d[4]) > 1e-4:
+        d2D_upper = float(np.linalg.norm(pose_2d[4] - pose_2d[2]))
+        d2D_lower = float(np.linalg.norm(pose_2d[6] - pose_2d[4]))
+        is_raised = pose_2d[6, 1] < 0.6 or abs(pose_2d[6, 0]) < 0.65
+
+        if is_raised:
+            elbow_fwd = max(0.06, np.sqrt(max(0.0, L_upper**2 - d2D_upper**2)) * 0.65)
+            wrist_fwd = elbow_fwd + max(0.10, np.sqrt(max(0.0, L_lower**2 - d2D_lower**2)) * 0.85)
+            # Anti-torso clipping floor
+            if abs(pose_2d[6, 0]) < 0.65 and pose_2d[6, 1] < 0.6:
+                elbow_fwd = max(elbow_fwd, 0.14)
+                wrist_fwd = max(wrist_fwd, 0.22)
+            pose_3d[4, 2] = -elbow_fwd
+            pose_3d[6, 2] = -wrist_fwd
+        else:
+            pose_3d[4, 2] = -0.03
+            pose_3d[6, 2] = -0.05
 
     return pose_3d
 
-def synthesize_3d_depth_hand(hand_2d, wrist_z_base=-0.25):
+def synthesize_3d_depth_hand(hand_2d, wrist_z_base=-0.22):
     """
-    Synthesize natural 3D depth curvature for 21 hand landmarks relative to wrist.
-    Points: 0: Wrist, 1..4: Thumb, 5..8: Index, 9..12: Middle, 13..16: Ring, 17..20: Pinky.
+    Synthesize true volumetric 3D hand depth with palm transverse arch
+    and forward circular arcs for curling fingers.
     """
     hand_3d = np.zeros((21, 3), dtype=np.float32)
     for i in range(21):
@@ -111,59 +129,53 @@ def synthesize_3d_depth_hand(hand_2d, wrist_z_base=-0.25):
     if np.linalg.norm(hand_2d) < 1e-4:
         return hand_3d
 
-    # Wrist anchor depth
     hand_3d[0, 2] = wrist_z_base
 
-    # Estimate palm scale from distance between wrist (0) and middle MCP (9)
-    palm_len = np.linalg.norm(hand_2d[9, :2] - hand_2d[0, :2])
+    palm_len = float(np.linalg.norm(hand_2d[9, :2] - hand_2d[0, :2]))
     if palm_len < 1e-3:
         palm_len = 0.15
 
-    # Knuckle base depth offsets relative to wrist (natural transverse metacarpal arch)
-    mcp_offsets = {
-        5: -0.025 * palm_len,   # Index MCP
-        9: -0.040 * palm_len,   # Middle MCP (apex of transverse arch)
-        13: -0.030 * palm_len,  # Ring MCP
-        17: -0.018 * palm_len   # Pinky MCP
+    scale_ratio = palm_len / 0.15
+
+    # Palm transverse arch offsets relative to wrist
+    mcp_arch_offsets = {
+        1: -0.025 * scale_ratio,  # Thumb CMC
+        2: -0.040 * scale_ratio,  # Thumb MCP
+        5: -0.015 * scale_ratio,  # Index MCP
+        9: -0.022 * scale_ratio,  # Middle MCP
+        13: -0.015 * scale_ratio, # Ring MCP
+        17: -0.005 * scale_ratio  # Pinky MCP
     }
 
-    # Finger chains: [MCP, PIP, DIP, TIP]
-    fingers = {
-        'index': ([5, 6, 7, 8], [0.38, 0.24, 0.18], mcp_offsets[5]),
-        'middle': ([9, 10, 11, 12], [0.42, 0.27, 0.20], mcp_offsets[9]),
-        'ring': ([13, 14, 15, 16], [0.38, 0.25, 0.18], mcp_offsets[13]),
-        'pinky': ([17, 18, 19, 20], [0.32, 0.20, 0.16], mcp_offsets[17])
-    }
+    finger_chains = [
+        [5, 6, 7, 8],
+        [9, 10, 11, 12],
+        [13, 14, 15, 16],
+        [17, 18, 19, 20]
+    ]
 
-    for name, (indices, expected_lens, base_offset) in fingers.items():
-        mcp_idx = indices[0]
-        hand_3d[mcp_idx, 2] = wrist_z_base + base_offset
-        for step in range(3):
-            parent_idx = indices[step]
-            child_idx = indices[step + 1]
-            exp_len = expected_lens[step] * palm_len
-            d2d = np.linalg.norm(hand_2d[child_idx, :2] - hand_2d[parent_idx, :2])
-            if d2d < exp_len:
-                dz = -np.sqrt(max(0.0, exp_len**2 - d2d**2))
-            else:
-                dz = -0.015 * palm_len
-            hand_3d[child_idx, 2] = hand_3d[parent_idx, 2] + dz
+    for mcp, off in mcp_arch_offsets.items():
+        hand_3d[mcp, 2] = wrist_z_base + off
 
-    # Thumb chain: 1: CMC, 2: MCP, 3: IP, 4: TIP
-    # Thumb naturally abducts forward towards the camera
-    thumb_indices = [1, 2, 3, 4]
-    thumb_exp_lens = [0.28, 0.26, 0.22, 0.18]
-    hand_3d[1, 2] = wrist_z_base - 0.025 * palm_len
-    for step in range(3):
-        parent_idx = thumb_indices[step]
-        child_idx = thumb_indices[step + 1]
-        exp_len = thumb_exp_lens[step] * palm_len
-        d2d = np.linalg.norm(hand_2d[child_idx, :2] - hand_2d[parent_idx, :2])
-        if d2d < exp_len:
-            dz = -np.sqrt(max(0.0, exp_len**2 - d2d**2))
-        else:
-            dz = -0.02 * palm_len
-        hand_3d[child_idx, 2] = hand_3d[parent_idx, 2] + dz
+    for chain in finger_chains:
+        mcp, pip, dip, tip = chain
+        direct = float(np.linalg.norm(hand_2d[tip, :2] - hand_2d[mcp, :2]))
+        curve = max(
+            float(np.linalg.norm(hand_2d[pip, :2] - hand_2d[mcp, :2]) +
+                  np.linalg.norm(hand_2d[dip, :2] - hand_2d[pip, :2]) +
+                  np.linalg.norm(hand_2d[tip, :2] - hand_2d[dip, :2])),
+            0.001
+        )
+        curl = float(np.clip((0.85 - direct / curve) / (0.85 - 0.30), 0.0, 1.0))
+        base_z = hand_3d[mcp, 2]
+
+        hand_3d[pip, 2] = base_z - np.sin(curl * 1.2) * 0.025 * scale_ratio
+        hand_3d[dip, 2] = base_z - np.sin(curl * 1.8) * 0.040 * scale_ratio
+        hand_3d[tip, 2] = base_z - np.sin(curl * 2.4) * 0.035 * scale_ratio
+
+    # Thumb IP & TIP
+    hand_3d[3, 2] = hand_3d[2, 2] - 0.020 * scale_ratio
+    hand_3d[4, 2] = hand_3d[2, 2] - 0.015 * scale_ratio
 
     return hand_3d
 

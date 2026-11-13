@@ -109,13 +109,42 @@ function processFrameSlice(slice, dimMode, frameIndex) {
       const idx = i * stride;
       const x = slice[idx];
       const y = slice[idx + 1];
-      let z = is3d ? slice[idx + 2] : 0.0;
-      if (!is3d) {
-        if (i === 0) z = -0.06;
-        else if (i === 3 || i === 4) z = y < 0.8 ? -0.12 : -0.04;
-        else if (i === 5 || i === 6) z = y < 0.6 ? -0.25 : -0.08;
-      }
+      const z = is3d ? slice[idx + 2] : 0.0;
       pose.push([x, y, z]);
+    }
+
+    if (!is3d) {
+      pose[0][2] = -0.06; // Nose slightly forward
+      const L_upper = 0.95;
+      const L_lower = 0.90;
+
+      // Left Arm forward kinematic depth
+      const dL_upper = Math.hypot(pose[3][0] - pose[1][0], pose[3][1] - pose[1][1]);
+      const dL_lower = Math.hypot(pose[5][0] - pose[3][0], pose[5][1] - pose[3][1]);
+      if (pose[5][1] < 0.6 || Math.abs(pose[5][0]) < 0.65) {
+        let e_z = Math.max(0.06, Math.sqrt(Math.max(0, L_upper * L_upper - dL_upper * dL_upper)) * 0.65);
+        let w_z = e_z + Math.max(0.10, Math.sqrt(Math.max(0, L_lower * L_lower - dL_lower * dL_lower)) * 0.85);
+        if (Math.abs(pose[5][0]) < 0.65 && pose[5][1] < 0.6) {
+          e_z = Math.max(e_z, 0.14);
+          w_z = Math.max(w_z, 0.22);
+        }
+        pose[3][2] = -e_z;
+        pose[5][2] = -w_z;
+      }
+
+      // Right Arm forward kinematic depth
+      const dR_upper = Math.hypot(pose[4][0] - pose[2][0], pose[4][1] - pose[2][1]);
+      const dR_lower = Math.hypot(pose[6][0] - pose[4][0], pose[6][1] - pose[4][1]);
+      if (pose[6][1] < 0.6 || Math.abs(pose[6][0]) < 0.65) {
+        let e_z = Math.max(0.06, Math.sqrt(Math.max(0, L_upper * L_upper - dR_upper * dR_upper)) * 0.65);
+        let w_z = e_z + Math.max(0.10, Math.sqrt(Math.max(0, L_lower * L_lower - dR_lower * dR_lower)) * 0.85);
+        if (Math.abs(pose[6][0]) < 0.65 && pose[6][1] < 0.6) {
+          e_z = Math.max(e_z, 0.14);
+          w_z = Math.max(w_z, 0.22);
+        }
+        pose[4][2] = -e_z;
+        pose[6][2] = -w_z;
+      }
     }
 
     const hand = [];
@@ -123,7 +152,6 @@ function processFrameSlice(slice, dimMode, frameIndex) {
     const handWristX = slice[handStart];
     const handWristY = slice[handStart + 1];
 
-    // Measure active hand side: compare Hand Wrist to L_Wrist (idx 5) vs R_Wrist (idx 6)
     const dL = Math.hypot(handWristX - pose[5][0], handWristY - pose[5][1]);
     const dR = Math.hypot(handWristX - pose[6][0], handWristY - pose[6][1]);
     const activeSide = dL <= dR ? 'leftHand' : 'rightHand';
@@ -133,14 +161,17 @@ function processFrameSlice(slice, dimMode, frameIndex) {
       slice[handStart + 9 * stride] - handWristX,
       slice[handStart + 9 * stride + 1] - handWristY
     ) || 0.15;
+    const scaleRatio = palmLen / 0.15;
+
+    const mcpArch = { 1: -0.025 * scaleRatio, 2: -0.040 * scaleRatio, 5: -0.015 * scaleRatio, 9: -0.022 * scaleRatio, 13: -0.015 * scaleRatio, 17: -0.005 * scaleRatio };
 
     for (let i = 0; i < 21; i++) {
       const idx = handStart + i * stride;
       const x = slice[idx];
       const y = slice[idx + 1];
       let z = is3d ? slice[idx + 2] : wristZ;
-      if (!is3d && i > 0) {
-        z -= (i >= 5 && i <= 8 ? 0.02 : 0.03) * palmLen;
+      if (!is3d && i > 0 && mcpArch[i]) {
+        z += mcpArch[i];
       }
       hand.push([x, y, z]);
     }
@@ -163,13 +194,42 @@ function processFrameSlice(slice, dimMode, frameIndex) {
     const idx = i * stride;
     const x = slice[idx];
     const y = slice[idx + 1];
-    let z = is3d ? slice[idx + 2] : 0.0;
-    if (!is3d) {
-      if (i === 0) z = -0.06;
-      else if (i === 3 || i === 4) z = y < 0.8 ? -0.12 : -0.04;
-      else if (i === 5 || i === 6) z = y < 0.6 ? -0.25 : -0.08;
-    }
+    const z = is3d ? slice[idx + 2] : 0.0;
     pose.push([x, y, z]);
+  }
+
+  if (!is3d) {
+    pose[0][2] = -0.06;
+    const L_upper = 0.95;
+    const L_lower = 0.90;
+
+    // Left Arm forward kinematic depth
+    const dL_upper = Math.hypot(pose[3][0] - pose[1][0], pose[3][1] - pose[1][1]);
+    const dL_lower = Math.hypot(pose[5][0] - pose[3][0], pose[5][1] - pose[3][1]);
+    if (pose[5][1] < 0.6 || Math.abs(pose[5][0]) < 0.65) {
+      let e_z = Math.max(0.06, Math.sqrt(Math.max(0, L_upper * L_upper - dL_upper * dL_upper)) * 0.65);
+      let w_z = e_z + Math.max(0.10, Math.sqrt(Math.max(0, L_lower * L_lower - dL_lower * dL_lower)) * 0.85);
+      if (Math.abs(pose[5][0]) < 0.65 && pose[5][1] < 0.6) {
+        e_z = Math.max(e_z, 0.14);
+        w_z = Math.max(w_z, 0.22);
+      }
+      pose[3][2] = -e_z;
+      pose[5][2] = -w_z;
+    }
+
+    // Right Arm forward kinematic depth
+    const dR_upper = Math.hypot(pose[4][0] - pose[2][0], pose[4][1] - pose[2][1]);
+    const dR_lower = Math.hypot(pose[6][0] - pose[4][0], pose[6][1] - pose[4][1]);
+    if (pose[6][1] < 0.6 || Math.abs(pose[6][0]) < 0.65) {
+      let e_z = Math.max(0.06, Math.sqrt(Math.max(0, L_upper * L_upper - dR_upper * dR_upper)) * 0.65);
+      let w_z = e_z + Math.max(0.10, Math.sqrt(Math.max(0, L_lower * L_lower - dR_lower * dR_lower)) * 0.85);
+      if (Math.abs(pose[6][0]) < 0.65 && pose[6][1] < 0.6) {
+        e_z = Math.max(e_z, 0.14);
+        w_z = Math.max(w_z, 0.22);
+      }
+      pose[4][2] = -e_z;
+      pose[6][2] = -w_z;
+    }
   }
 
   // Left hand: points 8..28
