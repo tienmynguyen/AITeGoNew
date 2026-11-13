@@ -432,7 +432,7 @@ export class SkeletonOverlay {
       });
 
       // Clenched fist stabilization: lock all finger curls to 1.0
-      const isFistHand = (curledCount >= 4) || (curledCount >= 3 && (fingerCurled[5] || 0) >= 0.70);
+      const isFistHand = (curledCount >= 3);
       if (isFistHand) {
         fingerChains.forEach((chain) => {
           fingerCurled[chain[0]] = 1.0;
@@ -534,8 +534,7 @@ export class SkeletonOverlay {
       rightHandWorld,
       isLeftActive,
       isRightActive,
-      activeHandSide: frame.activeHandSide,
-      wordName: frame.wordName
+      activeHandSide: frame.activeHandSide
     };
   }
 }

@@ -549,7 +549,7 @@ export class VRMEngine {
     const dMidFast = skelHandWorld[12].distanceTo(skelHandWorld[9]);
     const dRngFast = skelHandWorld[16].distanceTo(skelHandWorld[13]);
     const isFistHandFast = (dIdxFast < 0.38 * rawPalmLen && dMidFast < 0.38 * rawPalmLen && dRngFast < 0.38 * rawPalmLen) ||
-                           (this[`${prefix}IsFist`] === true && dIdxFast < 0.42 * rawPalmLen && dMidFast < 0.42 * rawPalmLen && dRngFast < 0.42 * rawPalmLen);
+                           (this[`${prefix}IsFist`] === true && dMidFast < 0.42 * rawPalmLen && dRngFast < 0.42 * rawPalmLen);
 
     const handNode = this.bones[isLeft ? VRMHumanBoneName.LeftHand : VRMHumanBoneName.RightHand];
     if (handNode && handNode.userData.restLocalQuat) {
@@ -797,60 +797,30 @@ export class VRMEngine {
     const dThumbIndex = pThumbTip.distanceTo(pIndexMcp) / palmLen;
 
     // Detection of Thumb Extension Exceptions:
-    // User rule: In most words the thumb is curled/folded (nắm), EXCEPT 5 to 9 and a few specific words (tốt, yêu, etc.)
-    const curWord = (this.currentWordName || '').toLowerCase();
+    // User rule: In most words the thumb is curled/folded (nắm), EXCEPT 6 to 9 and a few specific words.
+    // 1. Number 6: Index straight, Middle/Ring/Little curled, Thumb abducted from index
+    const isNum6 = (idxM.isStraight || idxM.rawCurl < 0.25) && midM.isCurled && ringM.isCurled && litM.isCurled && (dThumbIndex > 0.45) && (dThumbPinky > 0.85);
 
-    // 0. Number 5: 4 fingers curled into fist, thumb extended outward
-    const isNum5 = (curWord === '5') || 
-                   ((curledCount >= 3) && (dThumbPinky > 0.85) && (dThumbIndex > 0.45));
+    // 2. Number 7: Index + Middle straight, Ring + Little curled, Thumb abducted from index
+    const isNum7 = (idxM.isStraight || idxM.rawCurl < 0.25) && (midM.isStraight || midM.rawCurl < 0.25) && ringM.isCurled && litM.isCurled && (dThumbIndex > 0.45) && (dThumbPinky > 0.85);
 
-    // 1. Number 6: Index straight, Middle/Ring/Little curled, Thumb extended
-    const isNum6 = (curWord === '6' && (idxM.isStraight || idxM.rawCurl < 0.40)) || 
-                   ((idxM.isStraight || idxM.rawCurl < 0.35) && 
-                    (midM.rawCurl > 0.50 || midM.isCurled) && 
-                    (ringM.rawCurl > 0.50 || ringM.isCurled) && 
-                    (litM.rawCurl > 0.50 || litM.isCurled) && 
-                    (dThumbIndex > 0.38) && (dThumbPinky > 0.70));
-
-    // 2. Number 7: Index + Middle straight, Ring + Little curled, Thumb extended
-    const isNum7 = (curWord === '7' && (idxM.isStraight || idxM.rawCurl < 0.40)) || 
-                   ((idxM.isStraight || idxM.rawCurl < 0.35) && 
-                    (midM.isStraight || midM.rawCurl < 0.35) && 
-                    (ringM.rawCurl > 0.50 || ringM.isCurled) && 
-                    (litM.rawCurl > 0.50 || litM.isCurled) && 
-                    (dThumbIndex > 0.38) && (dThumbPinky > 0.70));
-
-    // 3. Number 8: Index + Middle + Ring straight, Little curled, Thumb extended
-    const isNum8 = (curWord === '8' && (idxM.isStraight || idxM.rawCurl < 0.40)) || 
-                   ((idxM.isStraight || idxM.rawCurl < 0.35) && 
-                    (midM.isStraight || midM.rawCurl < 0.35) && 
-                    (ringM.isStraight || ringM.rawCurl < 0.35) && 
-                    (litM.rawCurl > 0.50 || litM.isCurled) && 
-                    (dThumbIndex > 0.35) && (dThumbPinky > 0.65));
+    // 3. Number 8: Index + Middle + Ring straight, Little curled, Thumb abducted
+    const isNum8 = (idxM.isStraight || idxM.rawCurl < 0.25) && (midM.isStraight || midM.rawCurl < 0.25) && (ringM.isStraight || ringM.rawCurl < 0.25) && litM.isCurled && (dThumbIndex > 0.45) && (dThumbPinky > 0.75);
 
     // 4. Number 9 / 10 / all-straight open hand with wide thumb: 4 fingers straight AND thumb spread far
-    const isAllOpen = (idxM.isStraight || idxM.rawCurl < 0.30) && 
-                      (midM.isStraight || midM.rawCurl < 0.30) && 
-                      (ringM.isStraight || ringM.rawCurl < 0.30) && 
-                      (litM.isStraight || litM.rawCurl < 0.30) && 
-                      (dThumbPinky > 0.70) && (dThumbIndex > 0.40);
+    const isAllOpen = (idxM.isStraight || idxM.rawCurl < 0.25) && 
+                      (midM.isStraight || midM.rawCurl < 0.25) && 
+                      (ringM.isStraight || ringM.rawCurl < 0.25) && 
+                      (litM.isStraight || litM.rawCurl < 0.25) &&
+                      (dThumbPinky > 0.70) && (dThumbIndex > 0.45);
 
     // 5. Thumbs Up ("Tốt"): 4 fingers curled into a fist, thumb pointing UP with high distance to pinky
-    const isThumbsUp = (curWord === 'tốt') || 
-                       ((curledCount >= 3) && (dThumbPinky > 1.25) && (pThumbTip.y > pThumbMcp.y));
+    const isThumbsUp = (curledCount >= 3) && (dThumbPinky > 1.25) && (pThumbTip.y > pThumbMcp.y);
 
     // 6. ILY sign ("Yêu"): Index straight, Little straight, Middle & Ring curled, Thumb abducted
-    const isILY = (curWord === 'yêu') || 
-                  ((idxM.isStraight || idxM.rawCurl < 0.35) && (litM.isStraight || litM.rawCurl < 0.35) && 
-                   (midM.rawCurl > 0.50) && (ringM.rawCurl > 0.50) && (dThumbPinky > 1.10));
+    const isILY = (idxM.isStraight || idxM.rawCurl < 0.25) && (litM.isStraight || litM.rawCurl < 0.25) && midM.isCurled && ringM.isCurled && (dThumbPinky > 1.20);
 
-    // Words where thumb is explicitly FOLDED into palm:
-    const foldThumbWords = ['1', '2', '3', '4', 'tôi', 'bạn', 'chúng tôi', 'bọn họ', 'làm ơn', 'xin lỗi'];
-    const isFoldWord = foldThumbWords.includes(curWord);
-
-    // Special safeguard: on clenched fist hand (nắm chặt tay) in two-hand numbers, the fist hand always keeps thumb folded
-    const isThisHandFist = isFist && !isNum5;
-    const isThumbExtended = (!isThisHandFist) && (!isFoldWord) && (isNum5 || isNum6 || isNum7 || isNum8 || isAllOpen || isThumbsUp || isILY);
+    const isThumbExtended = isNum6 || isNum7 || isNum8 || isAllOpen || isThumbsUp || isILY;
 
     // Default: thumb is FOLDED / NẮM for almost all words (1, 2, 3, 4, Bạn, Tôi, fists, etc.)
     let rawThumbFold = 1.0;
@@ -888,20 +858,19 @@ export class VRMEngine {
       const axisVec = axisName === 'z' ? new THREE.Vector3(0, 0, 1) :
                       axisName === 'x' ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
 
-      // Inward opposition across palm (sFold) vs Outward abduction away from palm (sOpen)
+      // Inward opposition across palm + abduction (tight fold on clenched fist)
       const foldScaleProx = isFist ? 1.15 : 0.85;
       const foldScaleInter = isFist ? 1.35 : 1.00;
       const foldScaleDist = isFist ? 1.25 : 0.95;
 
-      const qProx = new THREE.Quaternion()
-        .setFromAxisAngle(axisVec, sign * (sFold * foldScaleProx - sOpen * 0.55))
-        .multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), sign * (sFold * 0.35 - sOpen * 0.20)));
+      const qFold = new THREE.Quaternion().setFromAxisAngle(axisVec, sign * (sFold * foldScaleProx));
+      const qAbduct = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), sign * (sOpen * 0.35 - sFold * 0.35));
 
-      const targetProx = thumbProx.userData.restLocalQuat.clone().multiply(qProx);
+      const targetProx = thumbProx.userData.restLocalQuat.clone().multiply(qFold).multiply(qAbduct);
       thumbProx.quaternion.slerp(targetProx, fingerAlpha);
       thumbProx.updateMatrixWorld(true);
 
-      // Intermediate thumb bone (Thumb2 MCP flexion into the palm when folded, straight when open)
+      // Intermediate thumb bone (Thumb2 MCP flexion into the palm)
       if (thumbInter && thumbInter.userData.restLocalQuat) {
         const interAxisName = thumbInter.userData.curlAxis || 'z';
         const interSign = thumbInter.userData.curlSign !== undefined ? thumbInter.userData.curlSign : sign;
@@ -914,14 +883,14 @@ export class VRMEngine {
         thumbInter.updateMatrixWorld(true);
       }
 
-      // Distal thumb bone (Thumb3 IP flexion / clamping when folded, straight when open)
+      // Distal thumb bone (Thumb3 IP flexion / clamping)
       if (thumbDistNode && thumbDistNode.userData.restLocalQuat) {
         const distAxisName = thumbInter?.userData?.curlAxis || thumbDistNode.userData.curlAxis || 'z';
         const distSign = thumbInter?.userData?.curlSign !== undefined ? thumbInter.userData.curlSign : sign;
         const distAxisVec = distAxisName === 'z' ? new THREE.Vector3(0, 0, 1) :
                             distAxisName === 'x' ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
 
-        const qTip = new THREE.Quaternion().setFromAxisAngle(distAxisVec, distSign * (sFold * (foldScaleDist + 0.05)));
+        const qTip = new THREE.Quaternion().setFromAxisAngle(distAxisVec, distSign * (sFold * foldScaleDist + 0.05));
         const targetDist = thumbDistNode.userData.restLocalQuat.clone().multiply(qTip);
         thumbDistNode.quaternion.slerp(targetDist, fingerAlpha);
         thumbDistNode.updateMatrixWorld(true);
@@ -934,8 +903,6 @@ export class VRMEngine {
    */
   update(skeletonWorldData, delta = 0.016) {
     if (!this.isLoaded || !this.currentVRM || !skeletonWorldData) return;
-
-    this.currentWordName = (skeletonWorldData.wordName || '').trim().toLowerCase();
 
     const { poseWorld, leftHandWorld, rightHandWorld } = skeletonWorldData;
     if (!poseWorld || poseWorld.length < 8) return;
