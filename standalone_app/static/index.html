@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Sign Language & Gemini LLM Sentence Builder</title>
+    <link rel="stylesheet" href="/static/css/style.css?v=2.4">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+</head>
+<body class="dark-theme">
+    <!-- Header -->
+    <header class="navbar">
+        <div class="nav-brand">
+            <div class="brand-icon">
+                <span class="pulse-ring"></span>
+                🤟
+            </div>
+            <div>
+                <h1 class="brand-title">AI Sign Language Translator</h1>
+                <p class="brand-sub">Nhận diện Cử chỉ Phân nhánh & Ghép câu Tự nhiên với Google Gemini LLM</p>
+            </div>
+        </div>
+
+        <div class="nav-status-group">
+            <div id="cameraStatusBadge" class="status-badge status-offline cursor-pointer" title="Trạng thái Camera">
+                <span class="status-dot"></span>
+                <span id="cameraStatusText">Camera: Đang tắt</span>
+            </div>
+            <div id="branchStatusBadge" class="status-badge status-branch cursor-pointer" title="Nhấp để cấu hình nhánh">
+                <span id="branchStatusIcon">🌟</span>
+                <span id="branchStatusText">Chế độ: Tự động</span>
+            </div>
+            <div id="geminiStatusBadge" class="status-badge status-gemini cursor-pointer" title="Nhấp để nhập API Key">
+                <span class="gemini-sparkle">✨</span>
+                <span id="geminiStatusText">Gemini: Chưa có Key</span>
+            </div>
+            <div class="fps-badge">
+                <span id="fpsCounter">0</span> <small>FPS</small>
+            </div>
+            <button id="btnOpenSettings" class="btn btn-sm btn-outline btn-settings-nav" title="Mở cài đặt & tùy chọn">
+                <span>⚙️</span>
+                <span>Cài đặt</span>
+            </button>
+        </div>
+    </header>
+
+    <!-- Main Container: Chỉ gồm Khung Camera, Hàng đợi Từ và Câu hoàn chỉnh -->
+    <main class="main-layout">
+        <!-- LEFT COLUMN: Khung Camera Nhận diện -->
+        <section class="vision-column">
+            <div class="card vision-card">
+                <div class="card-header">
+                    <div class="card-title">
+                        <span class="icon">📷</span>
+                        <span>Khung hình Camera</span>
+                    </div>
+                    <div class="stream-controls">
+                        <div class="cam-source-tabs">
+                            <button id="tabBrowserCam" class="btn btn-xs btn-segmented active" title="Dùng webcam trực tiếp qua trình duyệt">
+                                📷 Trình duyệt
+                            </button>
+                            <button id="tabServerCam" class="btn btn-xs btn-segmented" title="Dùng camera máy chủ qua OpenCV">
+                                🖥️ Server
+                            </button>
+                        </div>
+                        <button id="btnToggleCam" class="btn btn-sm btn-primary">
+                            <span id="iconToggleCam">▶️</span>
+                            <span id="textToggleCam">Bật Cam</span>
+                        </button>
+                    </div>
+                </div>
+
+                <div class="video-container" id="videoContainer">
+                    <!-- 1. BROWSER WEBCAM -->
+                    <video id="browserVideo" autoplay playsinline muted></video>
+                    <canvas id="overlayCanvas"></canvas>
+
+                    <!-- 2. SERVER OPENCV MJPEG STREAM -->
+                    <img id="serverVideoFeed" src="/video_feed" alt="OpenCV Stream" style="display: none;" />
+
+                    <!-- Placeholder khi Camera đang tắt -->
+                    <div id="camOffPlaceholder" class="cam-placeholder">
+                        <span class="cam-placeholder-icon">📷</span>
+                        <h3>Camera đang tắt</h3>
+                        <p>Nhấn nút <strong>"Bật Cam"</strong> để bắt đầu nhận diện cử chỉ.</p>
+                        <button id="btnStartCamBig" class="btn btn-primary" style="margin-top: 8px;">
+                            ▶️ Bật Camera Trình Duyệt
+                        </button>
+                    </div>
+                    
+                    <!-- Overlay nhận diện & Tiến trình duy trì cử chỉ (Hold 2s) -->
+                    <div id="livePredictionOverlay" class="prediction-overlay hidden">
+                        <div class="pred-header-row">
+                            <span class="pred-tag" id="predBranchTag">1 TAY</span>
+                            <span class="pred-word" id="predWordText">xin chào</span>
+                            <span class="pred-conf-pill" id="predConfLabel">85%</span>
+                        </div>
+                        <div class="pred-hold-row">
+                            <span class="pred-hold-status" id="predHoldStatus">⏳ Giữ: 0.0s / 1.0s</span>
+                        </div>
+                        <div class="pred-progress-track">
+                            <div class="pred-progress-fill" id="predHoldBar" style="width: 0%;"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- RIGHT COLUMN: Hàng đợi Từ vựng & Câu Hoàn Chỉnh -->
+        <section class="language-column">
+            <!-- 1. Hàng đợi Từ nhận diện -->
+            <div class="card queue-card">
+                <div class="card-header">
+                    <div class="card-title">
+                        <span class="icon">📥</span>
+                        <span>Hàng đợi Từ nhận diện</span>
+                        <span class="badge badge-primary" id="queueCountBadge">0 từ</span>
+                    </div>
+                    <div class="queue-actions">
+                        <button id="btnUndoWord" class="btn btn-xs btn-outline" title="Xóa từ cuối cùng">
+                            ↩️ Hoàn tác
+                        </button>
+                        <button id="btnClearQueue" class="btn btn-xs btn-danger" title="Xóa toàn bộ hàng đợi">
+                            🗑️ Xóa hết
+                        </button>
+                    </div>
+                </div>
+
+                <div class="queue-container" id="wordQueueContainer">
+                    <div class="empty-queue-placeholder" id="emptyQueueNotice">
+                        <span class="icon-big">👋</span>
+                        <p>Chưa có từ nào trong hàng đợi.</p>
+                        <small>Hãy bật camera làm cử chỉ tay hoặc nhập thêm từ bên dưới.</small>
+                    </div>
+                    <div class="queue-chips-wrap" id="queueChips">
+                        <!-- Chips từ vựng tự động chèn vào đây -->
+                    </div>
+                </div>
+
+                <!-- Hàng nhập từ bổ sung & Nút Ghép câu -->
+                <div class="manual-input-row">
+                    <input type="text" id="manualWordInput" class="form-input" placeholder="Nhập thêm từ thủ công nếu cần (VD: ăn cơm, đi chợ)...">
+                    <button id="btnAddManualWord" class="btn btn-secondary">
+                        <span>➕ Thêm</span>
+                    </button>
+                </div>
+
+                <div class="queue-action-row">
+                    <button id="btnGenerateSentence" class="btn btn-primary btn-generate-hero">
+                        <span class="gemini-sparkle">✨</span>
+                        <span id="btnGenerateText">Ghép thành câu hoàn chỉnh</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- 2. Câu hoàn chỉnh To Rõ Nổi Bật -->
+            <div class="card sentence-hero-card" id="sentenceOutputBox">
+                <div class="card-header">
+                    <div class="card-title">
+                        <span class="gemini-sparkle">💬</span>
+                        <span class="hero-sentence-label">CÂU HOÀN CHỈNH (GEMINI AI)</span>
+                    </div>
+                    <div class="output-actions">
+                        <button id="btnSpeakSentence" class="btn btn-sm btn-accent" title="Đọc to câu tiếng Việt">
+                            🔊 Phát âm (TTS)
+                        </button>
+                        <button id="btnCopySentence" class="btn btn-sm btn-outline" title="Sao chép câu">
+                            📋 Sao chép
+                        </button>
+                    </div>
+                </div>
+
+                <div class="sentence-hero-body">
+                    <div class="sentence-display" id="sentenceDisplayText">
+                        <em>Chưa có câu nào được tạo. Hãy làm cử chỉ hoặc nhập từ và nhấn nút ghép câu!</em>
+                    </div>
+
+                    <div class="sentence-details" id="sentenceDetails" style="display: none;">
+                        <div id="englishTranslationText" class="english-translation"></div>
+                        <div id="explanationText" class="explanation-pill"></div>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer class="footer">
+        <p>Hệ thống Nhận diện Ngôn ngữ Ký hiệu Phân nhánh kết hợp Google Gemini LLM • Nhấn <strong>⚙️ Cài đặt</strong> ở trên để tùy chỉnh hệ thống</p>
+    </footer>
+
+    <!-- ========================================================= -->
+    <!-- POPUP SETTINGS MODAL (CHỨA TOÀN BỘ CÁC TÙY CHỌN HỆ THỐNG) -->
+    <!-- ========================================================= -->
+    <div id="settingsModal" class="modal-backdrop hidden">
+        <div class="modal-container">
+            <div class="modal-header">
+                <div class="modal-title">
+                    <span>⚙️</span>
+                    <span>Cài đặt & Tùy chọn Hệ thống</span>
+                </div>
+                <button id="btnCloseModal" class="modal-close-btn" title="Đóng">&times;</button>
+            </div>
+
+            <!-- Tabs Điều Hướng -->
+            <div class="modal-tabs">
+                <button class="modal-tab-btn active" data-tab="tabGemini">
+                    <span>✨</span> Cấu hình Gemini AI
+                </button>
+                <button class="modal-tab-btn" data-tab="tabVision">
+                    <span>📷</span> Nhận diện & Camera
+                </button>
+                <button class="modal-tab-btn" data-tab="tabDict">
+                    <span>📖</span> Từ điển 38 Cử chỉ
+                </button>
+                <button class="modal-tab-btn" data-tab="tabHistory">
+                    <span>📜</span> Lịch sử Dịch
+                </button>
+            </div>
+
+            <!-- Nội Dung Từng Tab -->
+            <div class="modal-body">
+                <!-- TAB 1: CẤU HÌNH GEMINI LLM -->
+                <div id="tabGemini" class="modal-tab-content active">
+                    <!-- Alias container để tương thích mã JS cũ -->
+                    <div id="geminiSettingsPanel" class="gemini-settings-panel-inner">
+                        <div class="form-group">
+                            <label class="form-label" for="geminiApiKeyInput">
+                                Gemini API Key:
+                                <small class="text-muted">(Lấy miễn phí tại Google AI Studio)</small>
+                            </label>
+                            <div class="input-with-button">
+                                <input type="password" id="geminiApiKeyInput" class="form-input" placeholder="AIzaSy..." />
+                                <button id="btnToggleKeyMask" class="btn btn-xs btn-outline" type="button">👁️</button>
+                                <button id="btnSaveKey" class="btn btn-sm btn-primary">Lưu Key</button>
+                                <button id="btnTestKey" class="btn btn-sm btn-secondary">Kiểm tra</button>
+                            </div>
+                            <div id="apiKeyNotice" class="notice-msg"></div>
+                        </div>
+
+                        <div class="settings-grid-2">
+                            <div class="form-group">
+                                <label class="form-label" for="geminiModelSelect">Mô hình AI:</label>
+                                <select id="geminiModelSelect" class="form-select">
+                                    <option value="gemini-3.5-flash" selected>Gemini 3.5 Flash (Tốc độ cao & Khuyên dùng)</option>
+                                    <option value="gemini-3.8-flash">Gemini 3.8 Flash (Mới nhất)</option>
+                                    <option value="gemini-1.5-flash">Gemini 1.5 Flash (Ổn định cao)</option>
+                                    <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
+                                    <option value="gemini-1.5-pro">Gemini 1.5 Pro</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label" for="sentenceStyleSelect">Phong cách ghép câu:</label>
+                                <select id="sentenceStyleSelect" class="form-select">
+                                    <option value="natural">Tự nhiên (Thường ngày)</option>
+                                    <option value="polite">Lịch sự / Kính ngữ (Dạ, thưa, ạ)</option>
+                                    <option value="concise">Ngắn gọn, súc tích</option>
+                                    <option value="question">Câu hỏi / Nghi vấn (?)</option>
+                                    <option value="bilingual">Song ngữ (Việt - Anh)</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div class="form-group" style="margin-top: 10px;">
+                            <label class="form-label" for="customPromptInput">Yêu cầu riêng về ngữ cảnh (Tùy chọn):</label>
+                            <input type="text" id="customPromptInput" class="form-input" placeholder="Ví dụ: xưng hô em - thầy, ngữ cảnh đi ăn quán, mua đồ..." />
+                        </div>
+
+                        <div class="auto-trigger-toggle-box" style="margin-top: 12px;">
+                            <label class="switch">
+                                <input type="checkbox" id="toggleAutoSentence" checked>
+                                <span class="slider round"></span>
+                            </label>
+                            <span class="toggle-text">⚡ Tự động ghép câu sau mỗi lần thêm từ hoặc có chỉnh sửa</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- TAB 2: NHẬN DIỆN & CAMERA -->
+                <div id="tabVision" class="modal-tab-content">
+                    <div class="form-group">
+                        <label class="form-label">Định tuyến Nhánh (Router):</label>
+                        <div class="btn-group">
+                            <button class="btn btn-segmented active" data-branch="AUTO" id="btnBranchAuto">
+                                <span>🌟 Tự động (Router)</span>
+                            </button>
+                            <button class="btn btn-segmented" data-branch="ONE_HAND" id="btnBranchOne">
+                                <span>🖐️ Ép 1 Tay (10 từ)</span>
+                            </button>
+                            <button class="btn btn-segmented" data-branch="TWO_HANDS" id="btnBranchTwo">
+                                <span>👐 Ép 2 Tay (28 từ)</span>
+                            </button>
+                        </div>
+                        <small class="text-muted" style="display: block; margin-top: 4px;">Chế độ Tự động sẽ thông minh nhận diện số và cử chỉ phân nhánh theo số bàn tay xuất hiện.</small>
+                    </div>
+
+                    <div class="vision-settings-grid" style="padding: 0; margin-top: 1.25rem;">
+                        <div class="slider-control">
+                            <div class="slider-label">
+                                <span>Thời gian giữ cử chỉ (Duy trì để thêm từ)</span>
+                                <span class="slider-val" id="valHoldDuration">1.0s</span>
+                            </div>
+                            <input type="range" id="sliderHoldDuration" min="0.3" max="3.0" value="1.0" step="0.1">
+                            <small class="text-muted" style="font-size: 0.72rem; display: block; margin-top: 2px;">Duy trì cử chỉ liên tục trong số giây này để xác nhận thêm từ vào hàng đợi.</small>
+                        </div>
+                        <div class="slider-control">
+                            <div class="slider-label">
+                                <span>Ngưỡng Tin cậy (Confidence)</span>
+                                <span class="slider-val" id="valConfThreshold">68%</span>
+                            </div>
+                            <input type="range" id="sliderConfThreshold" min="50" max="95" value="68" step="1">
+                        </div>
+                        <div class="slider-control">
+                            <div class="slider-label">
+                                <span>Thời gian trễ lặp (Debounce)</span>
+                                <span class="slider-val" id="valCooldown">1.0s</span>
+                            </div>
+                            <input type="range" id="sliderCooldown" min="0.5" max="3.0" value="1.0" step="0.1">
+                        </div>
+                        <div class="toggle-control">
+                            <label class="switch">
+                                <input type="checkbox" id="toggleDrawLandmarks" checked>
+                                <span class="slider round"></span>
+                            </label>
+                            <span class="toggle-label">Vẽ Khung Xương (MediaPipe Holistic Landmarks)</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- TAB 3: TỪ ĐIỂN 38 CỬ CHỈ -->
+                <div id="tabDict" class="modal-tab-content">
+                    <p class="dict-desc" style="margin-bottom: 1rem;">Nhấp vào bất kỳ từ nào để thêm trực tiếp từ đó vào hàng đợi từ vựng ngoài màn hình chính:</p>
+                    <div id="dictToggleHeader" style="display: none;"></div>
+                    <div id="dictArrow" style="display: none;"></div>
+                    
+                    <div class="dict-body" id="dictBody" style="padding: 0; max-height: none;">
+                        <div class="dict-section">
+                            <div class="section-title">🖐️ Nhánh 1 Tay (10 Cử chỉ cơ bản):</div>
+                            <div class="chips-list" id="chipsOneHand">
+                                <!-- Injected by JS -->
+                            </div>
+                        </div>
+                        <div class="dict-section">
+                            <div class="section-title">👐 Nhánh 2 Tay & Số Đếm (28 Cử chỉ):</div>
+                            <div class="chips-list" id="chipsTwoHands">
+                                <!-- Injected by JS -->
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- TAB 4: LỊCH SỬ DỊCH -->
+                <div id="tabHistory" class="modal-tab-content">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
+                        <span class="form-label" style="margin: 0;">Các câu đã được Gemini tái tạo:</span>
+                        <button id="btnClearHistory" class="btn btn-xs btn-outline">
+                            🗑️ Xóa lịch sử
+                        </button>
+                    </div>
+                    <div class="history-list" id="historyList" style="max-height: 350px;">
+                        <div class="empty-history" id="emptyHistoryNotice">
+                            Chưa có lịch sử dịch trong phiên làm việc này.
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Modal Footer -->
+            <div class="modal-footer">
+                <button id="btnDoneSettings" class="btn btn-primary">
+                    ✓ Hoàn tất & Đóng
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Nút ẩn để tương thích code JS cũ nếu có gọi btnToggleSettings -->
+    <button id="btnToggleSettings" style="display: none;"></button>
+
+    <script src="/static/js/app.js?v=2.4"></script>
+</body>
+</html>

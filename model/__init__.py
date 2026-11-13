@@ -1,2 +1,2 @@
-from model.keypoint_classifier.keypoint_classifier import KeyPointClassifier
-from model.point_history_classifier.point_history_classifier import PointHistoryClassifier
+from model.one_hand_classifier.one_hand_classifier import OneHandClassifier
+from model.two_hands_classifier.two_hands_classifier import TwoHandsClassifier

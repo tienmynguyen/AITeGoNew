@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>VSL 3D Studio - Vietnamese Sign Language 3D Avatar</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="brand">
+        <div class="brand-icon">VSL</div>
+        <div>
+          <span class="brand-title">VSL 3D Studio</span>
+          <span class="brand-badge">VRM 0.0 + 3D Skeleton</span>
+        </div>
+      </div>
+      <div class="header-stats">
+        <div class="status-pill">
+          <span class="dot-indicator" id="model-dot"></span>
+          <span id="model-status-text">AvatarSample_A.vrm Đang tải...</span>
+        </div>
+        <div class="status-pill">
+          <span style="color: var(--cyan-primary); font-weight: 700;" id="fps-counter">60 FPS</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Bento Grid Layout -->
+    <main class="bento-grid">
+      <!-- Left Panel: Word Bank & Sentence Builder -->
+      <section class="bento-card">
+        <div class="card-header">
+          <div class="card-title">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
+              <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
+            </svg>
+            Thư viện cử chỉ VSL
+          </div>
+          <span id="word-count-badge" class="brand-badge">20 từ</span>
+        </div>
+
+        <div class="card-body">
+          <!-- Search -->
+          <div class="search-box">
+            <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="11" cy="11" r="8"></circle>
+              <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+            </svg>
+            <input type="text" id="search-input" class="search-input" placeholder="Tìm kiếm từ hoặc cử chỉ...">
+          </div>
+
+          <!-- Category Filter Tabs -->
+          <div class="filter-tabs">
+            <button class="filter-tab active" data-filter="all">Tất cả</button>
+            <button class="filter-tab" data-filter="one_hand">1 Tay</button>
+            <button class="filter-tab" data-filter="two_hands">2 Tay</button>
+            <button class="filter-tab" data-filter="number">Số</button>
+          </div>
+
+          <!-- Word Badges Grid -->
+          <div class="word-grid" id="word-bank-container">
+            <!-- Dynamically populated from manifest.json -->
+          </div>
+
+          <!-- Sentence Sequence Builder Section -->
+          <div class="sentence-builder-card">
+            <div class="section-label">
+              <span>Chuỗi câu ghép (Timeline Sequence)</span>
+              <span id="sequence-count" style="color: var(--cyan-primary);">0 từ</span>
+            </div>
+
+            <div class="sentence-chips-container" id="sentence-chips-box">
+              <span class="empty-chip-hint" id="empty-hint">Bấm các từ ở trên để ghép câu VSL</span>
+            </div>
+
+            <div class="sentence-actions">
+              <button class="btn-primary" id="btn-play-sentence">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                  <polygon points="5 3 19 12 5 21 5 3"></polygon>
+                </svg>
+                Phát toàn bộ câu
+              </button>
+              <button class="btn-secondary" id="btn-clear-sentence">Xóa</button>
+            </div>
+
+            <!-- Quick Presets -->
+            <div class="preset-sentences">
+              <div class="section-label" style="margin-top: 8px;">Câu mẫu gợi ý:</div>
+              <button class="preset-btn" data-preset="xin chào,tôi,yêu,bạn">👋 "Xin chào, tôi yêu bạn"</button>
+              <button class="preset-btn" data-preset="chúng tôi,cảm ơn,bạn">🤝 "Chúng tôi cảm ơn bạn"</button>
+              <button class="preset-btn" data-preset="xin lỗi,làm ơn,dừng lại">🙏 "Xin lỗi, làm ơn dừng lại"</button>
+              <button class="preset-btn" data-preset="1,2,3,4,5">🔢 "Đếm số: 1, 2, 3, 4, 5"</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Center Panel: 3D Viewport -->
+      <section class="viewport-card">
+        <div id="canvas-container"></div>
+
+        <!-- Floating HUD Top -->
+        <div class="hud-top">
+          <div class="current-word-card">
+            <span style="font-size: 11px; color: var(--cyan-primary); text-transform: uppercase; font-weight: 700;">Từ hiện tại:</span>
+            <span class="current-word-text" id="hud-active-word">xin chào</span>
+            <span class="bridge-badge" id="hud-bridge-badge" style="display: none;">Chuyển tiếp (Bridge)</span>
+          </div>
+
+          <!-- Camera HUD Presets -->
+          <div class="camera-controls-hud">
+            <button class="hud-btn active" data-cam="upper">Thân trên</button>
+            <button class="hud-btn" data-cam="close">Cận cảnh tay/mặt</button>
+            <button class="hud-btn" data-cam="full">Toàn thân</button>
+            <button class="hud-btn" data-cam="side">Góc nghiêng</button>
+          </div>
+        </div>
+
+        <!-- Floating Bottom Timeline Controls -->
+        <div class="hud-bottom">
+          <div class="timeline-progress-bar" id="timeline-bar">
+            <div class="timeline-progress-fill" id="timeline-fill"></div>
+          </div>
+
+          <div class="timeline-controls-row">
+            <div class="playback-buttons">
+              <button class="icon-btn" id="btn-step-prev" title="Lùi 1 khung hình">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/>
+                </svg>
+              </button>
+              <button class="icon-btn primary" id="btn-play-pause" title="Phát / Tạm dừng">
+                <svg id="play-pause-icon" width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>
+                </svg>
+              </button>
+              <button class="icon-btn" id="btn-step-next" title="Tiến 1 khung hình">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/>
+                </svg>
+              </button>
+              <button class="icon-btn" id="btn-reset" title="Phát lại từ đầu">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/>
+                </svg>
+              </button>
+              <button class="icon-btn" id="btn-loop-toggle" title="Bật/Tắt Lặp lại" style="color: var(--cyan-primary);">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/>
+                </svg>
+              </button>
+            </div>
+
+            <div class="timeline-time-info">
+              <span id="time-current-frame">Khung 0</span> / <span id="time-total-frames">30</span>
+              (<span id="time-percentage">0%</span>)
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Right Panel: Settings, Controls & Telemetry -->
+      <section class="bento-card">
+        <div class="card-header">
+          <div class="card-title">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="3"></circle>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+            </svg>
+            Điều khiển 3D
+          </div>
+        </div>
+
+        <div class="card-body">
+          <!-- Visibility Toggles -->
+          <div class="settings-group">
+            <div class="section-label">Lớp hiển thị (Display Layers)</div>
+
+            <div class="toggle-item">
+              <span class="toggle-label">
+                <span style="color: var(--cyan-primary);">●</span> Khung xương 3D Cyan
+              </span>
+              <label class="switch">
+                <input type="checkbox" id="toggle-skeleton" checked>
+                <span class="slider-round"></span>
+              </label>
+            </div>
+
+            <div class="toggle-item">
+              <span class="toggle-label">
+                <span style="color: #fff;">●</span> Nhân vật 3D VRM
+              </span>
+              <label class="switch">
+                <input type="checkbox" id="toggle-vrm" checked>
+                <span class="slider-round"></span>
+              </label>
+            </div>
+
+            <div class="toggle-item">
+              <span class="toggle-label">
+                <span style="color: var(--accent-purple);">●</span> Chế độ gương (Mirror)
+              </span>
+              <label class="switch">
+                <input type="checkbox" id="toggle-mirror">
+                <span class="slider-round"></span>
+              </label>
+            </div>
+          </div>
+
+          <!-- Motion Parameters -->
+          <div class="settings-group">
+            <div class="section-label">Tham số chuyển động</div>
+
+            <div class="range-group">
+              <div class="range-header">
+                <span>Tốc độ phát:</span>
+                <span id="val-speed" style="color: var(--cyan-primary); font-weight: 700;">1.0x</span>
+              </div>
+              <input type="range" id="slider-speed" class="range-input" min="0.25" max="2.0" step="0.05" value="1.0">
+            </div>
+
+            <div class="range-group">
+              <div class="range-header">
+                <span>Khung nối từ (Bridge Frames):</span>
+                <span id="val-bridge" style="color: var(--cyan-primary); font-weight: 700;">6 frames</span>
+              </div>
+              <input type="range" id="slider-bridge" class="range-input" min="1" max="15" step="1" value="6">
+            </div>
+
+            <div class="range-group">
+              <div class="range-header">
+                <span>Độ mượt SLERP (Arm Smoothing):</span>
+                <span id="val-slerp" style="color: var(--cyan-primary); font-weight: 700;">0.45</span>
+              </div>
+              <input type="range" id="slider-slerp" class="range-input" min="0.10" max="0.90" step="0.05" value="0.45">
+            </div>
+          </div>
+
+          <!-- Drag and Drop Dropzone -->
+          <div class="dropzone" id="dropzone-box">
+            <div class="dropzone-icon">📥</div>
+            <div class="dropzone-text">Thả tệp .NPY hoặc .VRM vào đây</div>
+            <div class="dropzone-sub">Xem trước ngay tức thì trên WebGL</div>
+            <input type="file" id="file-input-npy" accept=".npy,.vrm" style="display: none;">
+          </div>
+
+          <!-- Live Telemetry -->
+          <div class="telemetry-box">
+            <div class="telemetry-row">
+              <span>Bàn tay hoạt động:</span>
+              <span class="telemetry-val" id="telem-active-hand">LeftHand</span>
+            </div>
+            <div class="telemetry-row">
+              <span>Độ sâu 3D (X, Y, Z):</span>
+              <span class="telemetry-val" style="color: var(--accent-green);">Bảo toàn 100%</span>
+            </div>
+            <div class="telemetry-row">
+              <span>Số khớp xử lý:</span>
+              <span class="telemetry-val" id="telem-joint-count">29 điểm (3D)</span>
+            </div>
+            <div class="telemetry-row">
+              <span>Khớp ngón tay:</span>
+              <span class="telemetry-val" id="telem-finger-state">Tự động uốn gập</span>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

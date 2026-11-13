@@ -1,0 +1,226 @@
+{
+  "generatedAt": "2026-11-14",
+  "totalWords": 20,
+  "words": [
+    {
+      "id": "bạn",
+      "word": "bạn",
+      "category": "one_hand",
+      "mode": "one_hand",
+      "file": "bạn.json",
+      "path": "motions/bạn.json",
+      "frameCount": 30,
+      "fps": 30,
+      "hasDepth": true
+    },
+    {
+      "id": "bọn_họ",
+      "word": "bọn họ",
+      "category": "one_hand",
+      "mode": "one_hand",
+      "file": "bọn họ.json",
+      "path": "motions/bọn họ.json",
+      "frameCount": 30,
+      "fps": 30,
+      "hasDepth": true
+    },
+    {
+      "id": "chúng_tôi",
+      "word": "chúng tôi",
+      "category": "one_hand",
+      "mode": "one_hand",
+      "file": "chúng tôi.json",
+      "path": "motions/chúng tôi.json",
+      "frameCount": 30,
+      "fps": 30,
+      "hasDepth": true
+    },
+    {
+      "id": "có_đúng",
+      "word": "có - đúng",
+      "category": "one_hand",
+      "mode": "one_hand",
+      "file": "có - đúng.json",
+      "path": "motions/có - đúng.json",
+      "frameCount": 30,
+      "fps": 30,
+      "hasDepth": true
+    },
+    {
+      "id": "dừng_lại",
+      "word": "dừng lại",
+      "category": "one_hand",
+      "mode": "one_hand",
+      "file": "dừng lại.json",
+      "path": "motions/dừng lại.json",
+      "frameCount": 30,
+      "fps": 30,
+      "hasDepth": true
+    },
+    {
+      "id": "tôi",
+      "word": "tôi",
+      "category": "one_hand",
+      "mode": "one_hand",
+      "file": "tôi.json",
+      "path": "motions/tôi.json",
+      "frameCount": 30,
+      "fps": 30,
+      "hasDepth": true
+    },
+    {
+      "id": "tốt",
+      "word": "tốt",
+      "category": "one_hand",
+      "mode": "one_hand",
+      "file": "tốt.json",
+      "path": "motions/tốt.json",
+      "frameCount": 30,
+      "fps": 30,
+      "hasDepth": true
+    },
+    {
+      "id": "xin_chào",
+      "word": "xin chào",
+      "category": "one_hand",
+      "mode": "one_hand",
+      "file": "xin chào.json",
+      "path": "motions/xin chào.json",
+      "frameCount": 30,
+      "fps": 30,
+      "hasDepth": true
+    },
+    {
+      "id": "yêu",
+      "word": "yêu",
+      "category": "one_hand",
+      "mode": "one_hand",
+      "file": "yêu.json",
+      "path": "motions/yêu.json",
+      "frameCount": 30,
+      "fps": 30,
+      "hasDepth": true
+    },
+    {
+      "id": "1",
+      "word": "1",
+      "category": "two_hands",
+      "mode": "two_hands",
+      "file": "1.json",
+      "path": "motions/1.json",
+      "frameCount": 30,
+      "fps": 30,
+      "hasDepth": true
+    },
+    {
+      "id": "2",
+      "word": "2",
+      "category": "two_hands",
+      "mode": "two_hands",
+      "file": "2.json",
+      "path": "motions/2.json",
+      "frameCount": 30,
+      "fps": 30,
+      "hasDepth": true
+    },
+    {
+      "id": "3",
+      "word": "3",
+      "category": "two_hands",
+      "mode": "two_hands",
+      "file": "3.json",
+      "path": "motions/3.json",
+      "frameCount": 30,
+      "fps": 30,
+      "hasDepth": true
+    },
+    {
+      "id": "4",
+      "word": "4",
+      "category": "two_hands",
+      "mode": "two_hands",
+      "file": "4.json",
+      "path": "motions/4.json",
+      "frameCount": 30,
+      "fps": 30,
+      "hasDepth": true
+    },
+    {
+      "id": "5",
+      "word": "5",
+      "category": "two_hands",
+      "mode": "two_hands",
+      "file": "5.json",
+      "path": "motions/5.json",
+      "frameCount": 30,
+      "fps": 30,
+      "hasDepth": true
+    },
+    {
+      "id": "6",
+      "word": "6",
+      "category": "two_hands",
+      "mode": "two_hands",
+      "file": "6.json",
+      "path": "motions/6.json",
+      "frameCount": 30,
+      "fps": 30,
+      "hasDepth": true
+    },
+    {
+      "id": "7",
+      "word": "7",
+      "category": "two_hands",
+      "mode": "two_hands",
+      "file": "7.json",
+      "path": "motions/7.json",
+      "frameCount": 30,
+      "fps": 30,
+      "hasDepth": true
+    },
+    {
+      "id": "8",
+      "word": "8",
+      "category": "two_hands",
+      "mode": "two_hands",
+      "file": "8.json",
+      "path": "motions/8.json",
+      "frameCount": 30,
+      "fps": 30,
+      "hasDepth": true
+    },
+    {
+      "id": "cảm_ơn",
+      "word": "cảm ơn",
+      "category": "two_hands",
+      "mode": "two_hands",
+      "file": "cảm ơn.json",
+      "path": "motions/cảm ơn.json",
+      "frameCount": 30,
+      "fps": 30,
+      "hasDepth": true
+    },
+    {
+      "id": "làm_ơn",
+      "word": "làm ơn",
+      "category": "two_hands",
+      "mode": "two_hands",
+      "file": "làm ơn.json",
+      "path": "motions/làm ơn.json",
+      "frameCount": 30,
+      "fps": 30,
+      "hasDepth": true
+    },
+    {
+      "id": "xin_lỗi",
+      "word": "xin lỗi",
+      "category": "two_hands",
+      "mode": "two_hands",
+      "file": "xin lỗi.json",
+      "path": "motions/xin lỗi.json",
+      "frameCount": 30,
+      "fps": 30,
+      "hasDepth": true
+    }
+  ]
+}
