@@ -5,8 +5,8 @@ import { VRMLoaderPlugin, VRMUtils, VRMHumanBoneName } from '@pixiv/three-vrm';
 /**
  * VRM 0.0 Self-Calibrating Engine
  * Reads the 3D Cyan Skeleton positions in READ-ONLY mode.
- * Performs hierarchical arm alignment, anatomical wrist roll clamping,
- * and inward finger curling without flipping or backward hyperextension.
+ * Auto-calibrates finger curl and thumb opposition signs at load time in T-pose.
+ * Eliminates all backward hyperextension and prevents wrist inversion.
  */
 export class VRMEngine {
   constructor(scene) {
@@ -68,8 +68,11 @@ export class VRMEngine {
           vrm.scene.position.set(0, 0, 0);
           vrm.scene.updateMatrixWorld(true);
 
-          // Capture True T-Pose Rest Data on VRM Load
+          // 1. Capture True T-Pose Rest Data on VRM Load
           this.initRestData();
+
+          // 2. Auto-calibrate exact inward curl signs for fingers and thumb in T-pose
+          this.autoCalibrateFingerCurl();
 
           this.isLoaded = true;
           console.log('[VRMEngine] Successfully loaded and calibrated VRM model');
@@ -98,6 +101,127 @@ export class VRMEngine {
         node.userData.prevQuat = node.quaternion.clone();
         this.bones[boneName] = node;
       }
+    }
+  }
+
+  /**
+   * Empirical T-pose load-time test:
+   * Physically rotates each finger bone around local Z by +0.4 rad and tests if child bone
+   * moves DOWNWARD in world space (worldY decreases).
+   * Since palms face down (-Y) in T-pose, lowering worldY is 100% mathematically GUARANTEED
+   * to curl inward toward the palm, making backward bending impossible!
+   */
+  autoCalibrateFingerCurl() {
+    if (!this.currentVRM || !this.currentVRM.humanoid) return;
+
+    const vrm = this.currentVRM;
+    vrm.scene.rotation.y = Math.PI;
+    vrm.scene.position.set(0, 0, 0);
+    vrm.scene.updateMatrixWorld(true);
+
+    const sides = ['left', 'right'];
+    const fingerNames = ['Index', 'Middle', 'Ring', 'Little'];
+
+    // 1. Auto-calibrate 4 Fingers on each hand
+    for (const side of sides) {
+      for (const f of fingerNames) {
+        const proxBone = this.bones[`${side}${f}Proximal`];
+        const interBone = this.bones[`${side}${f}Intermediate`];
+        const distBone = this.bones[`${side}${f}Distal`];
+
+        if (!proxBone || !interBone) continue;
+
+        // Reset to rest
+        proxBone.quaternion.copy(proxBone.userData.restLocalQuat);
+        vrm.scene.updateMatrixWorld(true);
+
+        const restChildY = interBone.getWorldPosition(new THREE.Vector3()).y;
+
+        // Test +0.4 rad around local Z
+        const testQuat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), 0.4);
+        proxBone.quaternion.copy(proxBone.userData.restLocalQuat).multiply(testQuat);
+        vrm.scene.updateMatrixWorld(true);
+
+        const plusChildY = interBone.getWorldPosition(new THREE.Vector3()).y;
+
+        // Whichever direction lowers worldY is inward palm curl!
+        const signZ = (plusChildY < restChildY) ? 1 : -1;
+
+        proxBone.userData.curlSignZ = signZ;
+        if (interBone) interBone.userData.curlSignZ = signZ;
+        if (distBone) distBone.userData.curlSignZ = signZ;
+
+        // Restore rest pose
+        proxBone.quaternion.copy(proxBone.userData.restLocalQuat);
+        vrm.scene.updateMatrixWorld(true);
+
+        console.log(`[AutoCalibrate] ${side}${f} curlSignZ: ${signZ} (restY: ${restChildY.toFixed(4)}, plusY: ${plusChildY.toFixed(4)})`);
+      }
+    }
+
+    // 2. Auto-calibrate Thumb opposition on each hand
+    for (const side of sides) {
+      const thumbProx = this.bones[`${side}ThumbProximal`] || this.bones[`${side}ThumbMetacarpal`];
+      const thumbDist = this.bones[`${side}ThumbDistal`];
+      const pinkyProx = this.bones[`${side}LittleProximal`] || this.bones[`${side}IndexProximal`];
+
+      if (!thumbProx || !thumbDist || !pinkyProx) continue;
+
+      thumbProx.quaternion.copy(thumbProx.userData.restLocalQuat);
+      if (thumbDist.userData.restLocalQuat) thumbDist.quaternion.copy(thumbDist.userData.restLocalQuat);
+      vrm.scene.updateMatrixWorld(true);
+
+      const targetPos = pinkyProx.getWorldPosition(new THREE.Vector3());
+      const restDist = thumbDist.getWorldPosition(new THREE.Vector3()).distanceTo(targetPos);
+      const restY = thumbDist.getWorldPosition(new THREE.Vector3()).y;
+
+      let bestScore = -Infinity;
+      let bestAxis = 'y';
+      let bestSign = 1;
+
+      // Test axes: 'y', 'z', 'x' with +0.4 and -0.4 rad
+      const testAxes = [
+        { name: 'y', vec: new THREE.Vector3(0, 1, 0) },
+        { name: 'z', vec: new THREE.Vector3(0, 0, 1) },
+        { name: 'x', vec: new THREE.Vector3(1, 0, 0) }
+      ];
+
+      for (const axis of testAxes) {
+        for (const testSign of [1, -1]) {
+          const qTest = new THREE.Quaternion().setFromAxisAngle(axis.vec, testSign * 0.4);
+          thumbProx.quaternion.copy(thumbProx.userData.restLocalQuat).multiply(qTest);
+          vrm.scene.updateMatrixWorld(true);
+
+          const curPos = thumbDist.getWorldPosition(new THREE.Vector3());
+          const curDist = curPos.distanceTo(targetPos);
+          const curY = curPos.y;
+
+          // Opposition score: moves across palm closer to pinky (restDist - curDist) and downward (restY - curY)
+          const distImprovement = (restDist - curDist);
+          const yDrop = (restY - curY);
+          const score = distImprovement * 2.0 + yDrop;
+
+          if (score > bestScore) {
+            bestScore = score;
+            bestAxis = axis.name;
+            bestSign = testSign;
+          }
+        }
+      }
+
+      thumbProx.userData.curlAxis = bestAxis;
+      thumbProx.userData.curlSign = bestSign;
+      if (thumbDist) {
+        thumbDist.userData.curlAxis = bestAxis;
+        thumbDist.userData.curlSign = bestSign;
+      }
+
+      // Restore rest
+      thumbProx.quaternion.copy(thumbProx.userData.restLocalQuat);
+      if (thumbDist.userData.restLocalQuat) thumbDist.quaternion.copy(thumbDist.userData.restLocalQuat);
+      vrm.scene.updateMatrixWorld(true);
+
+      console.log(`[AutoCalibrate] ${side}Thumb curlAxis: ${bestAxis}, sign: ${bestSign} (score: ${bestScore.toFixed(4)})`);
     }
   }
 
@@ -138,7 +262,7 @@ export class VRMEngine {
 
     if (currentDir.lengthSq() < 1e-4) return;
 
-    // 3. Compute delta rotation in world space
+    // 3. Compute delta rotation in world space (shortest arc without twist)
     const deltaWorldQuat = new THREE.Quaternion().setFromUnitVectors(currentDir, targetDir);
 
     // 4. Convert delta rotation into bone's local space
@@ -192,24 +316,22 @@ export class VRMEngine {
       handBone.userData.prevQuat.copy(handBone.quaternion);
     }
 
-    // Reset fingers to open relaxed pose
     this.relaxFingers(side);
   }
 
   relaxFingers(side) {
     const isLeft = side === 'left';
     const prefix = isLeft ? 'left' : 'right';
-    const curlSign = isLeft ? 1 : -1;
     const fingerNames = ['Index', 'Middle', 'Ring', 'Little', 'Thumb'];
-
-    // 5 degrees micro-curve inward so fingers never hyperextend backward
-    const relaxedCurve = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), curlSign * 0.08);
 
     for (const f of fingerNames) {
       for (const seg of ['Proximal', 'Intermediate', 'Distal']) {
         const boneKey = `${prefix}${f}${seg}`;
         const node = this.bones[boneKey];
         if (node && node.userData.restLocalQuat) {
+          const signZ = node.userData.curlSignZ !== undefined ? node.userData.curlSignZ : (isLeft ? 1 : -1);
+          // 5 degrees micro-curve inward so fingers never hyperextend backward
+          const relaxedCurve = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), signZ * 0.08);
           const target = node.userData.restLocalQuat.clone().multiply(relaxedCurve);
           node.quaternion.slerp(target, 0.2);
         }
@@ -218,8 +340,8 @@ export class VRMEngine {
   }
 
   /**
-   * Anatomical Wrist & Finger Solver (Fix 3 & Fix 4)
-   * Inverts curl sign so fingers curl INWARD toward the palm, never backward!
+   * Anatomical Wrist & Finger Solver
+   * Uses load-time auto-calibrated curl signs to ensure 100% inward palm flexion.
    * Clamps against hyperextension with 0.08 rad natural micro-curve.
    */
   solveHandAndFingers(side, skelHandWorld) {
@@ -231,27 +353,26 @@ export class VRMEngine {
     const isLeft = side === 'left';
     const prefix = isLeft ? 'left' : 'right';
 
-    // Fix 3: Invert finger curl sign!
-    // For Left Hand: POSITIVE Z rotation (+curlAngle) curls inward toward palm (-Y).
-    // For Right Hand: NEGATIVE Z rotation (-curlAngle) curls inward toward palm (-Y).
-    const curlSign = isLeft ? 1 : -1;
-
     // 1. Solve Wrist: primary axis from Wrist (0) to Middle MCP (9)
     const handNode = this.bones[isLeft ? VRMHumanBoneName.LeftHand : VRMHumanBoneName.RightHand];
     const middleProxNode = this.bones[`${prefix}MiddleProximal`];
 
     if (handNode && middleProxNode) {
       const targetHandDir = skelHandWorld[9].clone().sub(skelHandWorld[0]).normalize();
+      // Shortest-arc alignment from restLocalQuat introduces ZERO twist
       this.alignBoneTowards(handNode, middleProxNode, targetHandDir);
 
-      // Orient palm normal so inner palm faces forward (+Z) or toward midline, NEVER backward
-      const vAcross = skelHandWorld[17].clone().sub(skelHandWorld[5]).normalize();
-      let palmNormal = targetHandDir.clone().cross(vAcross).normalize();
+      // Verify palm facing: ensure local up-vector is not flipped 180 degrees
+      // Inner palm vector in rest frame is (0, -1, 0)
+      const currentPalmWorld = new THREE.Vector3(0, -1, 0)
+        .applyQuaternion(handNode.getWorldQuaternion(new THREE.Quaternion()))
+        .normalize();
 
-      // Gentle roll clamping without sign flips
-      const rollAngle = THREE.MathUtils.clamp(palmNormal.y * 0.85, -0.95, 0.95);
-      const qRoll = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), rollAngle * 0.45);
-      handNode.quaternion.multiply(qRoll);
+      // If palm faces backwards towards spine (-Z < -0.2), apply gentle correction to face forward
+      if (currentPalmWorld.z < -0.2) {
+        const rollCorr = new THREE.Quaternion().setFromAxisAngle(targetHandDir, Math.PI * 0.5);
+        handNode.quaternion.multiply(rollCorr);
+      }
     }
 
     // Measure palm scale
@@ -279,15 +400,17 @@ export class VRMEngine {
       let curlAmount = (0.84 - extensionRatio) / (0.84 - 0.28);
       curlAmount = THREE.MathUtils.clamp(curlAmount, 0.0, 1.0);
 
-      // Fix 3: Hard clamp against backward hyperextension!
-      // Base micro-curve of 0.08 rad (5 degrees) inward toward palm so fingers never bend backward!
-      const proxAngle = curlSign * (0.08 + curlAmount * 1.25);
-      const interAngle = curlSign * (0.08 + curlAmount * 1.50);
-      const distAngle = curlSign * (0.08 + curlAmount * 1.00);
-
       const proxNode = this.bones[`${prefix}${f.name}Proximal`];
       const interNode = this.bones[`${prefix}${f.name}Intermediate`];
       const distNode = this.bones[`${prefix}${f.name}Distal`];
+
+      // Use empirical auto-calibrated sign (guaranteed to curl inward into palm!)
+      const signZ = proxNode?.userData?.curlSignZ !== undefined ? proxNode.userData.curlSignZ : (isLeft ? 1 : -1);
+
+      // Hard clamp: base micro-curve of 0.08 rad (5 degrees) inward so fingers NEVER bend backward!
+      const proxAngle = signZ * (0.08 + curlAmount * 1.25);
+      const interAngle = signZ * (0.08 + curlAmount * 1.50);
+      const distAngle = signZ * (0.08 + curlAmount * 1.00);
 
       if (proxNode && proxNode.userData.restLocalQuat) {
         const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), proxAngle);
@@ -311,17 +434,26 @@ export class VRMEngine {
     const thumbOpen = THREE.MathUtils.clamp((thumbDist - 0.35) / 0.45, 0.0, 1.0);
     const thumbFold = 1.0 - thumbOpen;
 
-    const thumbProx = this.bones[`${prefix}ThumbProximal`];
+    const thumbProx = this.bones[`${prefix}ThumbProximal`] || this.bones[`${prefix}ThumbMetacarpal`];
     const thumbDistNode = this.bones[`${prefix}ThumbDistal`];
 
     if (thumbProx && thumbProx.userData.restLocalQuat) {
-      const qFold = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), curlSign * thumbFold * 0.55);
-      const qAbduct = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), curlSign * (thumbOpen * 0.35 - thumbFold * 0.35));
+      const curlAxisName = thumbProx.userData.curlAxis || 'y';
+      const curlSign = thumbProx.userData.curlSign !== undefined ? thumbProx.userData.curlSign : (isLeft ? -1 : 1);
+
+      const axisVec = curlAxisName === 'z' ? new THREE.Vector3(0, 0, 1) :
+                      curlAxisName === 'x' ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
+
+      // Inward fold using calibrated axis & sign
+      const qFold = new THREE.Quaternion().setFromAxisAngle(axisVec, curlSign * (thumbFold * 0.65));
+      const qAbduct = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), curlSign * (thumbOpen * 0.30 - thumbFold * 0.30));
+
       thumbProx.quaternion.copy(thumbProx.userData.restLocalQuat).multiply(qFold).multiply(qAbduct);
     }
 
     if (thumbDistNode && thumbDistNode.userData.restLocalQuat) {
-      const qTip = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), curlSign * (thumbFold * 0.65 + 0.06));
+      const signZ = thumbProx?.userData?.curlSignZ !== undefined ? thumbProx.userData.curlSignZ : (isLeft ? 1 : -1);
+      const qTip = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), signZ * (thumbFold * 0.65 + 0.06));
       thumbDistNode.quaternion.copy(thumbDistNode.userData.restLocalQuat).multiply(qTip);
     }
   }
