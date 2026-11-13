@@ -165,6 +165,33 @@ export class SkeletonOverlay {
     const signX = this.mirror ? -1 : 1;
     const poseWorld = [];
 
+    // Determine active hands for single-hand vs two-hand gestures
+    const hasLeftHand = !!(leftHand && leftHand.length >= 21);
+    const hasRightHand = !!(rightHand && rightHand.length >= 21);
+
+    let isLeftActive = false;
+    let isRightActive = false;
+
+    if (frame.activeHandSide === 'leftHand') {
+      isLeftActive = true;
+      isRightActive = false;
+    } else if (frame.activeHandSide === 'rightHand') {
+      isLeftActive = false;
+      isRightActive = true;
+    } else if (hasLeftHand && !hasRightHand) {
+      isLeftActive = true;
+      isRightActive = false;
+    } else if (hasRightHand && !hasLeftHand) {
+      isLeftActive = false;
+      isRightActive = true;
+    } else if (hasLeftHand && hasRightHand) {
+      isLeftActive = true;
+      isRightActive = true;
+    } else {
+      isLeftActive = Math.abs(pose[5][0]) > 1e-4 || Math.abs(pose[5][1]) > 1e-4;
+      isRightActive = Math.abs(pose[6][0]) > 1e-4 || Math.abs(pose[6][1]) > 1e-4;
+    }
+
     if (pose && pose.length >= 8) {
       // 1. Mid-Shoulder (Point 7)
       const midShoulder = this.anchor.clone();
@@ -204,8 +231,7 @@ export class SkeletonOverlay {
       const L_lower = this.scale * 0.90;
 
       // Left Arm
-      const isLActive = Math.abs(pose[5][0]) > 1e-4 || Math.abs(pose[5][1]) > 1e-4;
-      if (isLActive) {
+      if (isLeftActive) {
         const nx_e = pose[3][0];
         const ny_e = pose[3][1];
         const nx_w = pose[5][0];
@@ -250,13 +276,29 @@ export class SkeletonOverlay {
         addJoint(worldElbowL, 0.9);
         addJoint(worldWristL, 1.0);
       } else {
-        poseWorld[3] = null;
-        poseWorld[5] = null;
+        // Left arm is INACTIVE: Duỗi thẳng tự nhiên xuống dưới
+        const shoulderL = poseWorld[1] || this.anchor;
+        const rawElbowL = new THREE.Vector3(
+          shoulderL.x + signX * 0.03,
+          shoulderL.y - L_upper,
+          shoulderL.z + 0.02
+        );
+        const rawWristL = new THREE.Vector3(
+          shoulderL.x + signX * 0.03,
+          shoulderL.y - L_upper - L_lower,
+          shoulderL.z + 0.02
+        );
+        const worldElbowL = this.smoothVec(this.smoothCache.pose, 'elbowL', rawElbowL, 0.40);
+        const worldWristL = this.smoothVec(this.smoothCache.pose, 'wristL', rawWristL, 0.40);
+
+        poseWorld[3] = worldElbowL;
+        poseWorld[5] = worldWristL;
+        addJoint(worldElbowL, 0.9);
+        addJoint(worldWristL, 1.0);
       }
 
       // Right Arm (Elbow 4, Wrist 6)
-      const isRActive = Math.abs(pose[6][0]) > 1e-4 || Math.abs(pose[6][1]) > 1e-4;
-      if (isRActive) {
+      if (isRightActive) {
         const nx_e = pose[4][0];
         const ny_e = pose[4][1];
         const nx_w = pose[6][0];
@@ -301,8 +343,25 @@ export class SkeletonOverlay {
         addJoint(worldElbowR, 0.9);
         addJoint(worldWristR, 1.0);
       } else {
-        poseWorld[4] = null;
-        poseWorld[6] = null;
+        // Right arm is INACTIVE: Duỗi thẳng tự nhiên xuống dưới
+        const shoulderR = poseWorld[2] || this.anchor;
+        const rawElbowR = new THREE.Vector3(
+          shoulderR.x - signX * 0.03,
+          shoulderR.y - L_upper,
+          shoulderR.z + 0.02
+        );
+        const rawWristR = new THREE.Vector3(
+          shoulderR.x - signX * 0.03,
+          shoulderR.y - L_upper - L_lower,
+          shoulderR.z + 0.02
+        );
+        const worldElbowR = this.smoothVec(this.smoothCache.pose, 'elbowR', rawElbowR, 0.40);
+        const worldWristR = this.smoothVec(this.smoothCache.pose, 'wristR', rawWristR, 0.40);
+
+        poseWorld[4] = worldElbowR;
+        poseWorld[6] = worldWristR;
+        addJoint(worldElbowR, 0.9);
+        addJoint(worldWristR, 1.0);
       }
 
       // Draw Pose lines
@@ -437,12 +496,12 @@ export class SkeletonOverlay {
     };
 
     let leftHandWorld = null;
-    if (leftHand && poseWorld[5]) {
+    if (isLeftActive && leftHand && poseWorld[5]) {
       leftHandWorld = renderHandVolumetric(leftHand, poseWorld[5], true);
     }
 
     let rightHandWorld = null;
-    if (rightHand && poseWorld[6]) {
+    if (isRightActive && rightHand && poseWorld[6]) {
       rightHandWorld = renderHandVolumetric(rightHand, poseWorld[6], false);
     }
 
@@ -455,7 +514,10 @@ export class SkeletonOverlay {
     return {
       poseWorld,
       leftHandWorld,
-      rightHandWorld
+      rightHandWorld,
+      isLeftActive,
+      isRightActive,
+      activeHandSide: frame.activeHandSide
     };
   }
 }

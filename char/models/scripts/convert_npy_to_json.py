@@ -219,10 +219,16 @@ def process_single_frame(frame_data, dim_mode, dominant_side=None):
             wrist_z = pose_3d[5, 2]
             lh_3d = synthesize_3d_depth_hand(hand_2d, wrist_z_base=wrist_z)
             rh_3d = None
+            # Inactive right arm hangs straight down below right shoulder
+            pose_3d[4] = [pose_3d[2, 0], pose_3d[2, 1] + 0.95, 0.0]
+            pose_3d[6] = [pose_3d[2, 0], pose_3d[2, 1] + 1.85, 0.0]
         else:
             wrist_z = pose_3d[6, 2]
             lh_3d = None
             rh_3d = synthesize_3d_depth_hand(hand_2d, wrist_z_base=wrist_z)
+            # Inactive left arm hangs straight down below left shoulder
+            pose_3d[3] = [pose_3d[1, 0], pose_3d[1, 1] + 0.95, 0.0]
+            pose_3d[5] = [pose_3d[1, 0], pose_3d[1, 1] + 1.85, 0.0]
 
         return pose_3d, lh_3d, rh_3d, active_side
 
@@ -244,9 +250,15 @@ def process_single_frame(frame_data, dim_mode, dominant_side=None):
         if active_side == 'leftHand':
             lh_3d = hand_3d
             rh_3d = None
+            # Inactive right arm hangs straight down below right shoulder
+            pose_3d[4] = [pose_3d[2, 0], pose_3d[2, 1] + 0.95, 0.0]
+            pose_3d[6] = [pose_3d[2, 0], pose_3d[2, 1] + 1.85, 0.0]
         else:
             lh_3d = None
             rh_3d = hand_3d
+            # Inactive left arm hangs straight down below left shoulder
+            pose_3d[3] = [pose_3d[1, 0], pose_3d[1, 1] + 0.95, 0.0]
+            pose_3d[5] = [pose_3d[1, 0], pose_3d[1, 1] + 1.85, 0.0]
 
         return pose_3d, lh_3d, rh_3d, active_side
 

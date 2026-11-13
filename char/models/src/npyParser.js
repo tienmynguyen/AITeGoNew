@@ -176,6 +176,15 @@ function processFrameSlice(slice, dimMode, frameIndex) {
       hand.push([x, y, z]);
     }
 
+    // For single-hand motion, ensure inactive arm is straight down below its shoulder
+    if (activeSide === 'leftHand') {
+      pose[4] = [pose[2][0], pose[2][1] + 0.95, 0.0];
+      pose[6] = [pose[2][0], pose[2][1] + 1.85, 0.0];
+    } else {
+      pose[3] = [pose[1][0], pose[1][1] + 0.95, 0.0];
+      pose[5] = [pose[1][0], pose[1][1] + 1.85, 0.0];
+    }
+
     return {
       frameIndex,
       pose,

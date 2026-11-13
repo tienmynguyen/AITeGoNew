@@ -16,10 +16,10 @@ export class VRMEngine {
     this.slerpFactor = 0.45; // Adjustable via UI slider
 
     // Relaxed rest rotations for inactive arms (hanging naturally at sides)
-    this.relaxedLeftUpper = new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.15, 0, -1.25, 'YXZ'));
-    this.relaxedLeftLower = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, -0.20, 'YXZ'));
-    this.relaxedRightUpper = new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.15, 0, 1.25, 'YXZ'));
-    this.relaxedRightLower = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, 0.20, 'YXZ'));
+    this.relaxedLeftUpper = new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.02, 0, -1.48, 'YXZ'));
+    this.relaxedLeftLower = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, 0, 'YXZ'));
+    this.relaxedRightUpper = new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.02, 0, 1.48, 'YXZ'));
+    this.relaxedRightLower = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, 0, 'YXZ'));
 
     // Natural blinking & expression state
     this.blinkTimer = 0;
@@ -394,7 +394,8 @@ export class VRMEngine {
   }
 
   /**
-   * Smoothly slerp an inactive arm back to a relaxed natural posture by her side.
+   * Smoothly slerp an inactive arm back to a relaxed natural posture hanging straight down at her side.
+   * Uses world-direction alignment so the arm is guaranteed to hang vertically straight down.
    */
   recoverRestPose(side, deltaTime = 0.016) {
     const isLeft = side === 'left';
@@ -402,25 +403,19 @@ export class VRMEngine {
     const lowerBone = this.bones[isLeft ? VRMHumanBoneName.LeftLowerArm : VRMHumanBoneName.RightLowerArm];
     const handBone = this.bones[isLeft ? VRMHumanBoneName.LeftHand : VRMHumanBoneName.RightHand];
 
-    const qRelaxedUpper = isLeft ? this.relaxedLeftUpper : this.relaxedRightUpper;
-    const qRelaxedLower = isLeft ? this.relaxedLeftLower : this.relaxedRightLower;
-
     const dt = Math.max(0.001, Math.min(0.1, deltaTime));
     const alphaRest = 1.0 - Math.exp(-8.0 * dt);
     const maxStep = 0.15;
 
-    if (upperBone && upperBone.userData.restLocalQuat) {
-      const targetQuat = upperBone.userData.restLocalQuat.clone().multiply(qRelaxedUpper);
-      const angle = upperBone.quaternion.angleTo(targetQuat);
-      upperBone.quaternion.rotateTowards(targetQuat, Math.min(alphaRest * angle, maxStep));
-      upperBone.updateMatrixWorld(true);
+    // Target world direction: straight down along the body side with slight clearance
+    const downDir = new THREE.Vector3(isLeft ? 0.06 : -0.06, -0.998, 0.02).normalize();
+
+    if (upperBone && lowerBone) {
+      this.alignBoneTowards(upperBone, lowerBone, downDir, dt);
     }
 
-    if (lowerBone && lowerBone.userData.restLocalQuat) {
-      const targetQuat = lowerBone.userData.restLocalQuat.clone().multiply(qRelaxedLower);
-      const angle = lowerBone.quaternion.angleTo(targetQuat);
-      lowerBone.quaternion.rotateTowards(targetQuat, Math.min(alphaRest * angle, maxStep));
-      lowerBone.updateMatrixWorld(true);
+    if (lowerBone && handBone) {
+      this.alignBoneTowards(lowerBone, handBone, downDir, dt);
     }
 
     if (handBone && handBone.userData.restLocalQuat) {
@@ -925,8 +920,17 @@ export class VRMEngine {
     }
 
     // 2. Exact Side Matching & Hierarchical Arm Alignment:
+    // Determine active arm states for single-hand vs two-hand gestures
+    const isLeftActive = skeletonWorldData.isLeftActive !== undefined
+      ? skeletonWorldData.isLeftActive
+      : (!!leftHandWorld && skeletonWorldData.activeHandSide !== 'rightHand');
+
+    const isRightActive = skeletonWorldData.isRightActive !== undefined
+      ? skeletonWorldData.isRightActive
+      : (!!rightHandWorld && skeletonWorldData.activeHandSide !== 'leftHand');
+
     // Left Arm (Joints 1: Shoulder, 3: Elbow, 5: Wrist)
-    if (poseWorld[1] && poseWorld[3] && poseWorld[5]) {
+    if (isLeftActive && leftHandWorld && poseWorld[1] && poseWorld[3] && poseWorld[5]) {
       const leftUpperArm = this.bones[VRMHumanBoneName.LeftUpperArm];
       const leftLowerArm = this.bones[VRMHumanBoneName.LeftLowerArm];
       const leftHandBone = this.bones[VRMHumanBoneName.LeftHand];
@@ -937,17 +941,14 @@ export class VRMEngine {
       const targetLowerDir = poseWorld[5].clone().sub(poseWorld[3]).normalize();
       this.alignBoneTowards(leftLowerArm, leftHandBone, targetLowerDir, delta);
 
-      if (leftHandWorld) {
-        this.solveHandAndFingers('left', leftHandWorld, delta);
-      } else {
-        this.recoverRestPose('left', delta);
-      }
+      this.solveHandAndFingers('left', leftHandWorld, delta);
     } else {
+      // Inactive or single-hand inactive arm: luôn duỗi thẳng tự nhiên xuống dưới
       this.recoverRestPose('left', delta);
     }
 
     // Right Arm (Joints 2: Shoulder, 4: Elbow, 6: Wrist)
-    if (poseWorld[2] && poseWorld[4] && poseWorld[6]) {
+    if (isRightActive && rightHandWorld && poseWorld[2] && poseWorld[4] && poseWorld[6]) {
       const rightUpperArm = this.bones[VRMHumanBoneName.RightUpperArm];
       const rightLowerArm = this.bones[VRMHumanBoneName.RightLowerArm];
       const rightHandBone = this.bones[VRMHumanBoneName.RightHand];
@@ -958,12 +959,9 @@ export class VRMEngine {
       const targetLowerDir = poseWorld[6].clone().sub(poseWorld[4]).normalize();
       this.alignBoneTowards(rightLowerArm, rightHandBone, targetLowerDir, delta);
 
-      if (rightHandWorld) {
-        this.solveHandAndFingers('right', rightHandWorld, delta);
-      } else {
-        this.recoverRestPose('right', delta);
-      }
+      this.solveHandAndFingers('right', rightHandWorld, delta);
     } else {
+      // Inactive or single-hand inactive arm: luôn duỗi thẳng tự nhiên xuống dưới
       this.recoverRestPose('right', delta);
     }
 
