@@ -193,7 +193,7 @@ def synthesize_3d_depth_hand(hand_2d, wrist_z_base=-0.22):
 
     return hand_3d
 
-def process_single_frame(frame_data, dim_mode):
+def process_single_frame(frame_data, dim_mode, dominant_side=None):
     """
     Process a single frame vector into 3D pose, leftHand, rightHand, and activeHandSide.
     """
@@ -205,19 +205,21 @@ def process_single_frame(frame_data, dim_mode):
         pose_3d = synthesize_3d_depth_pose(pose_2d)
 
         # Active hand side detection: Hand wrist (8) to L_Wrist (5) vs R_Wrist (6)
-        hand_wrist = hand_2d[0]
-        l_wrist = pose_2d[5]
-        r_wrist = pose_2d[6]
-        d_l = np.linalg.norm(hand_wrist - l_wrist)
-        d_r = np.linalg.norm(hand_wrist - r_wrist)
+        if dominant_side is not None:
+            active_side = dominant_side
+        else:
+            hand_wrist = hand_2d[0]
+            l_wrist = pose_2d[5]
+            r_wrist = pose_2d[6]
+            d_l = np.linalg.norm(hand_wrist - l_wrist)
+            d_r = np.linalg.norm(hand_wrist - r_wrist)
+            active_side = 'leftHand' if d_l <= d_r else 'rightHand'
 
-        if d_l <= d_r:
-            active_side = 'leftHand'
+        if active_side == 'leftHand':
             wrist_z = pose_3d[5, 2]
             lh_3d = synthesize_3d_depth_hand(hand_2d, wrist_z_base=wrist_z)
             rh_3d = None
         else:
-            active_side = 'rightHand'
             wrist_z = pose_3d[6, 2]
             lh_3d = None
             rh_3d = synthesize_3d_depth_hand(hand_2d, wrist_z_base=wrist_z)
@@ -229,18 +231,20 @@ def process_single_frame(frame_data, dim_mode):
         pose_3d = pts[0:8]
         hand_3d = pts[8:29]
 
-        hand_wrist = hand_3d[0, :2]
-        l_wrist = pose_3d[5, :2]
-        r_wrist = pose_3d[6, :2]
-        d_l = np.linalg.norm(hand_wrist - l_wrist)
-        d_r = np.linalg.norm(hand_wrist - r_wrist)
+        if dominant_side is not None:
+            active_side = dominant_side
+        else:
+            hand_wrist = hand_3d[0, :2]
+            l_wrist = pose_3d[5, :2]
+            r_wrist = pose_3d[6, :2]
+            d_l = np.linalg.norm(hand_wrist - l_wrist)
+            d_r = np.linalg.norm(hand_wrist - r_wrist)
+            active_side = 'leftHand' if d_l <= d_r else 'rightHand'
 
-        if d_l <= d_r:
-            active_side = 'leftHand'
+        if active_side == 'leftHand':
             lh_3d = hand_3d
             rh_3d = None
         else:
-            active_side = 'rightHand'
             lh_3d = None
             rh_3d = hand_3d
 
@@ -395,6 +399,42 @@ def smooth_landmark_sequence(raw_data, dim_mode):
         return raw_data
 
     pts = raw_data.reshape(T, num_points, C).copy()
+
+    # Pre-pass 1: Bridge 1-frame and 2-frame zero dropouts for hand joints
+    hand_start = 8
+    for j in range(hand_start, num_points):
+        mags = np.linalg.norm(pts[:, j, :], axis=1)
+        for t in range(1, T - 1):
+            if mags[t] <= 1e-4 and mags[t - 1] > 1e-4:
+                if mags[t + 1] > 1e-4:
+                    # 1-frame gap: linear interpolation
+                    pts[t, j, :] = 0.5 * (pts[t - 1, j, :] + pts[t + 1, j, :])
+                    mags[t] = np.linalg.norm(pts[t, j, :])
+                elif t + 2 < T and mags[t + 2] > 1e-4:
+                    # 2-frame gap: linear interpolation
+                    pts[t, j, :] = (2.0 / 3.0) * pts[t - 1, j, :] + (1.0 / 3.0) * pts[t + 2, j, :]
+                    pts[t + 1, j, :] = (1.0 / 3.0) * pts[t - 1, j, :] + (2.0 / 3.0) * pts[t + 2, j, :]
+                    mags[t] = np.linalg.norm(pts[t, j, :])
+                    mags[t + 1] = np.linalg.norm(pts[t + 1, j, :])
+
+    # Pre-pass 2: In two_hands mode, detect and correct cross-body hand label swapping
+    if 'two_hands' in dim_mode and num_points == 50:
+        for t in range(T):
+            lh_mag = np.linalg.norm(pts[t, 8:29, :])
+            rh_mag = np.linalg.norm(pts[t, 29:50, :])
+            if lh_mag > 1e-4 and rh_mag > 1e-4:
+                l_wrist = pts[t, 5, :2]
+                r_wrist = pts[t, 6, :2]
+                lh_wrist = pts[t, 8, :2]
+                rh_wrist = pts[t, 29, :2]
+                d_normal = np.linalg.norm(lh_wrist - l_wrist) + np.linalg.norm(rh_wrist - r_wrist)
+                d_swapped = np.linalg.norm(lh_wrist - r_wrist) + np.linalg.norm(rh_wrist - l_wrist)
+                if d_swapped + 0.35 < d_normal:
+                    # MediaPipe swapped left and right hands! Swap them back:
+                    tmp = pts[t, 8:29, :].copy()
+                    pts[t, 8:29, :] = pts[t, 29:50, :]
+                    pts[t, 29:50, :] = tmp
+
     smoothed_pts = np.copy(pts)
 
     # Point by point temporal smoothing across time
@@ -468,10 +508,24 @@ def convert_motion_file(npy_path, word_name, category):
     # Apply Savitzky-Golay / Gaussian temporal smoothing across time axis
     raw_data = smooth_landmark_sequence(raw_data, dim_mode)
 
+    # For one_hand mode: determine sequence-wide dominant hand side to prevent mid-sign hand flipping
+    dominant_side = None
+    if 'one_hand' in dim_mode:
+        pts_check = raw_data.reshape(frames_count, 29, -1)
+        total_dl = 0.0
+        total_dr = 0.0
+        for f_idx in range(frames_count):
+            hw = pts_check[f_idx, 8, :2]
+            lw = pts_check[f_idx, 5, :2]
+            rw = pts_check[f_idx, 6, :2]
+            total_dl += float(np.linalg.norm(hw - lw))
+            total_dr += float(np.linalg.norm(hw - rw))
+        dominant_side = 'leftHand' if total_dl <= total_dr else 'rightHand'
+
     frames_list = []
     for f_idx in range(frames_count):
         f_vec = raw_data[f_idx]
-        pose_3d, lh_3d, rh_3d, active_side = process_single_frame(f_vec, dim_mode)
+        pose_3d, lh_3d, rh_3d, active_side = process_single_frame(f_vec, dim_mode, dominant_side=dominant_side)
 
         frame_dict = {
             "frameIndex": f_idx,

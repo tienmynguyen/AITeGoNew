@@ -334,8 +334,13 @@ export class VRMEngine {
     const dt = Math.max(0.001, Math.min(0.1, deltaTime));
     const alpha = 1.0 - Math.exp(-12.0 * dt);
 
-    // B.quaternion smoothly slerps toward targetLocalQuat from its previous smoothed frame
-    boneNode.quaternion.slerp(targetLocalQuat, alpha);
+    // Max Angular Velocity Clamp: max 0.15 rad per frame (~8.6 deg at 30-60 fps)
+    // Prevents sudden wild arm whipping or teleporting when landmarks flip
+    const rotAngle = boneNode.quaternion.angleTo(targetLocalQuat);
+    const maxStep = 0.15;
+    const step = Math.min(alpha * rotAngle, maxStep);
+
+    boneNode.quaternion.rotateTowards(targetLocalQuat, step);
     boneNode.updateMatrixWorld(true);
   }
 
@@ -353,21 +358,25 @@ export class VRMEngine {
 
     const dt = Math.max(0.001, Math.min(0.1, deltaTime));
     const alphaRest = 1.0 - Math.exp(-8.0 * dt);
+    const maxStep = 0.15;
 
     if (upperBone && upperBone.userData.restLocalQuat) {
       const targetQuat = upperBone.userData.restLocalQuat.clone().multiply(qRelaxedUpper);
-      upperBone.quaternion.slerp(targetQuat, alphaRest);
+      const angle = upperBone.quaternion.angleTo(targetQuat);
+      upperBone.quaternion.rotateTowards(targetQuat, Math.min(alphaRest * angle, maxStep));
       upperBone.updateMatrixWorld(true);
     }
 
     if (lowerBone && lowerBone.userData.restLocalQuat) {
       const targetQuat = lowerBone.userData.restLocalQuat.clone().multiply(qRelaxedLower);
-      lowerBone.quaternion.slerp(targetQuat, alphaRest);
+      const angle = lowerBone.quaternion.angleTo(targetQuat);
+      lowerBone.quaternion.rotateTowards(targetQuat, Math.min(alphaRest * angle, maxStep));
       lowerBone.updateMatrixWorld(true);
     }
 
     if (handBone && handBone.userData.restLocalQuat) {
-      handBone.quaternion.slerp(handBone.userData.restLocalQuat, alphaRest);
+      const angle = handBone.quaternion.angleTo(handBone.userData.restLocalQuat);
+      handBone.quaternion.rotateTowards(handBone.userData.restLocalQuat, Math.min(alphaRest * angle, maxStep));
       handBone.updateMatrixWorld(true);
     }
 
@@ -476,7 +485,9 @@ export class VRMEngine {
       const targetLocalQuat = parentWorldQuat.clone().invert().multiply(targetWorldQuat);
 
       const alphaWrist = 1.0 - Math.exp(-12.0 * dt);
-      handNode.quaternion.slerp(targetLocalQuat, alphaWrist);
+      const angleWrist = handNode.quaternion.angleTo(targetLocalQuat);
+      const maxWristStep = 0.18;
+      handNode.quaternion.rotateTowards(targetLocalQuat, Math.min(alphaWrist * angleWrist, maxWristStep));
       handNode.updateMatrixWorld(true);
     }
 
@@ -493,7 +504,7 @@ export class VRMEngine {
     }
     const palmLen = this[palmKey];
 
-    // 5. 100% Cyan-Skeleton Matching Finger Solver with Unidirectional Anatomical Clamp
+    // 5. Multi-Metric Cyan-Skeleton Finger & Gesture Solver
     const knucklePlaneDir = new THREE.Vector3().crossVectors(axisX, palmNormal).normalize();
     const fingerAlpha = 1.0 - Math.exp(-12.0 * dt);
 
@@ -504,6 +515,8 @@ export class VRMEngine {
       { name: 'Little', mcp: 17, pip: 18, dip: 19, tip: 20 }
     ];
 
+    // Pass 1: Compute individual finger metrics
+    const fingerMetrics = {};
     for (const f of fingerDefs) {
       const pMcp = skelHandWorld[f.mcp].clone();
       const pPip = skelHandWorld[f.pip].clone();
@@ -514,9 +527,91 @@ export class VRMEngine {
       const curveDist = Math.max(pPip.distanceTo(pMcp) + pDip.distanceTo(pPip) + pTip.distanceTo(pDip), 0.01);
       const extensionRatio = directDist / curveDist;
 
-      let rawCurl = (0.84 - extensionRatio) / (0.84 - 0.28);
-      rawCurl = THREE.MathUtils.clamp(rawCurl, 0.0, 1.0);
+      // Multi-metric fist / curl detector:
+      // (1) Distance criterion: Tip is close to MCP (< 38% of palm length)
+      const isDistanceCurled = (directDist < 0.38 * palmLen);
 
+      // (2) Angular criterion: Angle between MCP->PIP and PIP->TIP exceeds 95 deg (> 1.60 rad)
+      const vMcpPip = pPip.clone().sub(pMcp).normalize();
+      const vPipTip = pTip.clone().sub(pPip).normalize();
+      const bendAngle = vMcpPip.angleTo(vPipTip);
+      const isAngleCurled = (bendAngle > 1.60);
+
+      // (3) Straight extension criterion:
+      const isStraight = (bendAngle < 0.45) && (directDist > 0.45 * palmLen) && (extensionRatio > 0.72);
+
+      let rawCurl = 0;
+      if (isDistanceCurled || isAngleCurled) {
+        rawCurl = 1.0;
+      } else if (isStraight) {
+        rawCurl = 0.0;
+      } else {
+        rawCurl = THREE.MathUtils.clamp((0.82 - extensionRatio) / (0.82 - 0.32), 0.0, 1.0);
+      }
+
+      fingerMetrics[f.name] = {
+        pMcp, pPip, pDip, pTip,
+        directDist, curveDist, extensionRatio,
+        bendAngle, isDistanceCurled, isAngleCurled, isStraight,
+        rawCurl, isCurled: (rawCurl >= 0.75 || isDistanceCurled || isAngleCurled)
+      };
+    }
+
+    // Pass 2: High-Level Gesture Overrides (Pointing, Numbers, Closed Fist)
+    const idxM = fingerMetrics['Index'];
+    const midM = fingerMetrics['Middle'];
+    const ringM = fingerMetrics['Ring'];
+    const litM = fingerMetrics['Little'];
+
+    const curledCount = (idxM.isCurled ? 1 : 0) + (midM.isCurled ? 1 : 0) + (ringM.isCurled ? 1 : 0) + (litM.isCurled ? 1 : 0);
+
+    // Pointing detection (Sign "Bạn", Number 1): Index straight, Middle/Ring/Little curled
+    const isIndexPointing = (idxM.isStraight || idxM.rawCurl < 0.25) && midM.isCurled && ringM.isCurled && litM.isCurled;
+
+    // Number 2 detection: Index + Middle straight, Ring + Little curled
+    const isNumber2 = (idxM.isStraight || idxM.rawCurl < 0.25) && (midM.isStraight || midM.rawCurl < 0.25) && ringM.isCurled && litM.isCurled;
+
+    // Number 3 detection: Index + Middle + Ring straight, Little curled
+    const isNumber3 = (idxM.isStraight || idxM.rawCurl < 0.25) && (midM.isStraight || midM.rawCurl < 0.25) && (ringM.isStraight || ringM.rawCurl < 0.25) && litM.isCurled;
+
+    // Number 4 detection: 4 fingers straight, thumb tucked
+    const pThumbTip = skelHandWorld[4];
+    const pPinkyMcp = skelHandWorld[17];
+    const dThumbPinky = pThumbTip.distanceTo(pPinkyMcp) / palmLen;
+    const isNumber4 = (idxM.isStraight || idxM.rawCurl < 0.25) && (midM.isStraight || midM.rawCurl < 0.25) && (ringM.isStraight || ringM.rawCurl < 0.25) && (litM.isStraight || litM.rawCurl < 0.25) && (dThumbPinky < 0.55);
+
+    if (isIndexPointing) {
+      idxM.rawCurl = 0.0;
+      midM.rawCurl = 1.0;
+      ringM.rawCurl = 1.0;
+      litM.rawCurl = 1.0;
+    } else if (isNumber2) {
+      idxM.rawCurl = 0.0;
+      midM.rawCurl = 0.0;
+      ringM.rawCurl = 1.0;
+      litM.rawCurl = 1.0;
+    } else if (isNumber3) {
+      idxM.rawCurl = 0.0;
+      midM.rawCurl = 0.0;
+      ringM.rawCurl = 0.0;
+      litM.rawCurl = 1.0;
+    } else if (isNumber4) {
+      idxM.rawCurl = 0.0;
+      midM.rawCurl = 0.0;
+      ringM.rawCurl = 0.0;
+      litM.rawCurl = 0.0;
+    } else if (curledCount >= 3) {
+      // Clenched fist (e.g. "Tốt", fists): snap any bent finger to 1.0 for tight uniform fist
+      for (const f of fingerDefs) {
+        if (fingerMetrics[f.name].rawCurl > 0.35) {
+          fingerMetrics[f.name].rawCurl = 1.0;
+        }
+      }
+    }
+
+    // Pass 3: Apply smoothed curl & rotations to finger bones
+    for (const f of fingerDefs) {
+      const m = fingerMetrics[f.name];
       const proxNode = this.bones[`${prefix}${f.name}Proximal`];
       const interNode = this.bones[`${prefix}${f.name}Intermediate`];
       const distNode = this.bones[`${prefix}${f.name}Distal`];
@@ -525,41 +620,34 @@ export class VRMEngine {
 
       // Deadzone + Exponential Low-Pass filter on curl amount:
       if (proxNode.userData.smoothedCurl === undefined) {
-        proxNode.userData.smoothedCurl = rawCurl;
+        proxNode.userData.smoothedCurl = m.rawCurl;
       } else {
         const prevCurl = proxNode.userData.smoothedCurl;
-        if (Math.abs(rawCurl - prevCurl) > 0.025) {
-          proxNode.userData.smoothedCurl = prevCurl + (rawCurl - prevCurl) * (1.0 - Math.exp(-10.0 * dt));
+        if (Math.abs(m.rawCurl - prevCurl) > 0.02) {
+          proxNode.userData.smoothedCurl = prevCurl + (m.rawCurl - prevCurl) * (1.0 - Math.exp(-12.0 * dt));
         }
       }
-      const smoothCurl = proxNode.userData.smoothedCurl;
-
-      // 1. Reconstruct true 3D finger positions along palmNormal:
-      const pip3D = pPip.clone().add(palmNormal.clone().multiplyScalar(smoothCurl * 0.025));
-      const dip3D = pDip.clone().add(palmNormal.clone().multiplyScalar(smoothCurl * 0.045));
-      const tip3D = pTip.clone().add(palmNormal.clone().multiplyScalar(smoothCurl * 0.040));
-
-      const segProx = pip3D.clone().sub(pMcp).normalize();
-      const segInter = dip3D.clone().sub(pip3D).normalize();
-      const segDist = tip3D.clone().sub(dip3D).normalize();
+      const smoothCurl = THREE.MathUtils.clamp(proxNode.userData.smoothedCurl, 0.0, 1.0);
 
       const signZ = proxNode.userData.curlSignZ !== undefined ? proxNode.userData.curlSignZ : (isLeft ? 1 : -1);
 
-      // Distance-ratio curl baseline angles:
-      const curlAngleProx = 0.05 + smoothCurl * 1.25;
-      const curlAngleInter = 0.05 + smoothCurl * 1.50;
-      const curlAngleDist = 0.05 + smoothCurl * 1.00;
+      // Anatomical flexion angles:
+      // When smoothCurl == 1.0 (clenched fist):
+      // Proximal: ~78° (1.36 rad)
+      // Intermediate: ~96° (1.68 rad)
+      // Distal: ~73° (1.28 rad)
+      // When smoothCurl == 0.0 (straight extended):
+      // 0.05 rad (~3° natural straight micro-curvature)
+      const finalFlexProx = 0.05 + smoothCurl * 1.35;
+      const finalFlexInter = 0.05 + smoothCurl * 1.63;
+      const finalFlexDist = 0.05 + smoothCurl * 1.23;
 
-      // Direct 2D/3D segment angles projected along palmNormal:
-      const dotPalmProx = segProx.dot(palmNormal);
-      const dotAxisProx = segProx.dot(axisX);
-      const directFlexProx = THREE.MathUtils.clamp(Math.atan2(dotPalmProx, Math.max(0.01, dotAxisProx)), 0.0, 1.75);
-      const finalFlexProx = THREE.MathUtils.clamp(0.5 * directFlexProx + 0.5 * curlAngleProx, 0.05, 1.75);
-
-      // Splay in knuckle plane (allowed within [-20 deg, +20 deg] for Proximal):
-      const dotSplay = segProx.dot(knucklePlaneDir);
+      // Knuckle plane splay (eliminated when fist is clenched):
+      const vProx = m.pPip.clone().sub(m.pMcp).normalize();
+      const dotSplay = vProx.dot(knucklePlaneDir);
+      const dotAxisProx = vProx.dot(axisX);
       const rawSplay = Math.atan2(dotSplay, Math.max(0.01, dotAxisProx));
-      const finalSplay = THREE.MathUtils.clamp(rawSplay, -0.35, 0.35);
+      const finalSplay = (1.0 - smoothCurl) * THREE.MathUtils.clamp(rawSplay, -0.25, 0.25);
 
       // Proximal Bone Rotation (Flexion + Splay):
       if (proxNode.userData.restLocalQuat) {
@@ -570,26 +658,16 @@ export class VRMEngine {
         proxNode.updateMatrixWorld(true);
       }
 
-      // Intermediate Bone Rotation (Flexion only, 0 splay/twist):
+      // Intermediate Bone Rotation (Flexion only):
       if (interNode && interNode.userData.restLocalQuat) {
-        const dotPalmInter = segInter.dot(palmNormal);
-        const dotAxisInter = segInter.dot(segProx);
-        const directFlexInter = THREE.MathUtils.clamp(Math.atan2(dotPalmInter, Math.max(0.01, dotAxisInter)), 0.0, 1.85);
-        const finalFlexInter = THREE.MathUtils.clamp(0.5 * directFlexInter + 0.5 * curlAngleInter, 0.05, 1.85);
-
         const qFlexInter = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), signZ * finalFlexInter);
         const targetInter = interNode.userData.restLocalQuat.clone().multiply(qFlexInter);
         interNode.quaternion.slerp(targetInter, fingerAlpha);
         interNode.updateMatrixWorld(true);
       }
 
-      // Distal Bone Rotation (Flexion only, 0 splay/twist):
+      // Distal Bone Rotation (Flexion only):
       if (distNode && distNode.userData.restLocalQuat) {
-        const dotPalmDist = segDist.dot(palmNormal);
-        const dotAxisDist = segDist.dot(segInter);
-        const directFlexDist = THREE.MathUtils.clamp(Math.atan2(dotPalmDist, Math.max(0.01, dotAxisDist)), 0.0, 1.55);
-        const finalFlexDist = THREE.MathUtils.clamp(0.5 * directFlexDist + 0.5 * curlAngleDist, 0.05, 1.55);
-
         const qFlexDist = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), signZ * finalFlexDist);
         const targetDist = distNode.userData.restLocalQuat.clone().multiply(qFlexDist);
         distNode.quaternion.slerp(targetDist, fingerAlpha);
@@ -597,13 +675,33 @@ export class VRMEngine {
       }
     }
 
-    // 6. Solve Thumb (Points 1..4)
-    const pThumbTip = skelHandWorld[4];
-    const pIndexMcp = skelHandWorld[5];
-    const rawThumbDist = pThumbTip.distanceTo(pIndexMcp) / palmLen;
+    // 6. Anatomical Thumb Solver (Opposition & Abduction)
+    const pThumbMcp = skelHandWorld[2];
+    const pThumbCmc = skelHandWorld[1];
+    const vThumb1 = pThumbMcp.clone().sub(pThumbCmc).normalize();
+    const vThumb2 = pThumbTip.clone().sub(pThumbMcp).normalize();
+    const thumbBendAngle = vThumb1.angleTo(vThumb2);
 
-    const rawThumbOpen = THREE.MathUtils.clamp((rawThumbDist - 0.35) / 0.45, 0.0, 1.0);
-    const rawThumbFold = 1.0 - rawThumbOpen;
+    let rawThumbFold = 0.0;
+    let rawThumbOpen = 1.0;
+
+    if (isNumber4 || ((isNumber2 || isNumber3) && dThumbPinky < 0.48)) {
+      // Tightly tucked across palm for numbers 2, 3, 4
+      rawThumbFold = 0.95;
+      rawThumbOpen = 0.05;
+    } else if (isIndexPointing) {
+      // Pointing sign ("Bạn", Number 1): thumb rests naturally alongside curled fingers
+      rawThumbFold = 0.22;
+      rawThumbOpen = 0.45;
+    } else if (dThumbPinky > 0.95 || thumbBendAngle < 0.35) {
+      // Extended thumb ("Tốt" thumbs up, sweeping "Bọn họ", numbers 5, 6, 7, 8)
+      rawThumbFold = 0.05;
+      rawThumbOpen = 0.95;
+    } else {
+      // Intermediate fold based on distance to pinky knuckle
+      rawThumbOpen = THREE.MathUtils.clamp((dThumbPinky - 0.35) / 0.55, 0.0, 1.0);
+      rawThumbFold = 1.0 - rawThumbOpen;
+    }
 
     const thumbProx = this.bones[`${prefix}ThumbProximal`] || this.bones[`${prefix}ThumbMetacarpal`];
     const thumbDistNode = this.bones[`${prefix}ThumbDistal`];
@@ -614,17 +712,17 @@ export class VRMEngine {
         thumbProx.userData.smoothedOpen = rawThumbOpen;
       } else {
         const prevFold = thumbProx.userData.smoothedFold;
-        if (Math.abs(rawThumbFold - prevFold) > 0.025) {
-          thumbProx.userData.smoothedFold = prevFold + (rawThumbFold - prevFold) * (1.0 - Math.exp(-10.0 * dt));
+        if (Math.abs(rawThumbFold - prevFold) > 0.02) {
+          thumbProx.userData.smoothedFold = prevFold + (rawThumbFold - prevFold) * (1.0 - Math.exp(-12.0 * dt));
         }
 
         const prevOpen = thumbProx.userData.smoothedOpen;
-        if (Math.abs(rawThumbOpen - prevOpen) > 0.025) {
-          thumbProx.userData.smoothedOpen = prevOpen + (rawThumbOpen - prevOpen) * (1.0 - Math.exp(-10.0 * dt));
+        if (Math.abs(rawThumbOpen - prevOpen) > 0.02) {
+          thumbProx.userData.smoothedOpen = prevOpen + (rawThumbOpen - prevOpen) * (1.0 - Math.exp(-12.0 * dt));
         }
       }
-      const sFold = thumbProx.userData.smoothedFold;
-      const sOpen = thumbProx.userData.smoothedOpen;
+      const sFold = THREE.MathUtils.clamp(thumbProx.userData.smoothedFold, 0.0, 1.0);
+      const sOpen = THREE.MathUtils.clamp(thumbProx.userData.smoothedOpen, 0.0, 1.0);
 
       const curlAxisName = thumbProx.userData.curlAxis || 'y';
       const curlSign = thumbProx.userData.curlSign !== undefined ? thumbProx.userData.curlSign : (isLeft ? -1 : 1);
@@ -633,7 +731,7 @@ export class VRMEngine {
                       curlAxisName === 'x' ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
 
       // Inward fold using calibrated axis & sign
-      const qFold = new THREE.Quaternion().setFromAxisAngle(axisVec, curlSign * (sFold * 0.75));
+      const qFold = new THREE.Quaternion().setFromAxisAngle(axisVec, curlSign * (sFold * 0.80));
       const qAbduct = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), curlSign * (sOpen * 0.35 - sFold * 0.25));
 
       const targetProx = thumbProx.userData.restLocalQuat.clone().multiply(qFold).multiply(qAbduct);
@@ -644,7 +742,7 @@ export class VRMEngine {
     if (thumbDistNode && thumbDistNode.userData.restLocalQuat) {
       const sFold = thumbProx?.userData?.smoothedFold !== undefined ? thumbProx.userData.smoothedFold : rawThumbFold;
       const signZ = thumbProx?.userData?.curlSignZ !== undefined ? thumbProx.userData.curlSignZ : (isLeft ? 1 : -1);
-      const qTip = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), signZ * (sFold * 0.70 + 0.08));
+      const qTip = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), signZ * (sFold * 0.75 + 0.05));
       const targetDist = thumbDistNode.userData.restLocalQuat.clone().multiply(qTip);
       thumbDistNode.quaternion.slerp(targetDist, fingerAlpha);
       thumbDistNode.updateMatrixWorld(true);
@@ -659,6 +757,21 @@ export class VRMEngine {
 
     const { poseWorld, leftHandWorld, rightHandWorld } = skeletonWorldData;
     if (!poseWorld || poseWorld.length < 8) return;
+
+    // Outlier jump clamp: prevents any single joint from jumping > 0.35m in a single frame
+    if (!this.prevPoseWorld) {
+      this.prevPoseWorld = poseWorld.map(p => (p ? p.clone() : null));
+    } else {
+      for (let j = 0; j < 8; j++) {
+        if (poseWorld[j] && this.prevPoseWorld[j]) {
+          const jumpDist = poseWorld[j].distanceTo(this.prevPoseWorld[j]);
+          if (jumpDist > 0.35) {
+            poseWorld[j].lerpVectors(this.prevPoseWorld[j], poseWorld[j], 0.35 / jumpDist);
+          }
+          this.prevPoseWorld[j].copy(poseWorld[j]);
+        }
+      }
+    }
 
     // 1. Constrained Head & Neck Orientation (clamped within ±12°)
     const headNode = this.bones[VRMHumanBoneName.Head];
