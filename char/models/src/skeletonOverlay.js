@@ -314,11 +314,23 @@ export class SkeletonOverlay {
     }
 
     // 5. Volumetric 3D Hand Depth (Fix 2: Never a Flat 2D Hand!)
-    const renderHandVolumetric = (handPoints, wristAnchorWorld) => {
+    const renderHandVolumetric = (handPoints, wristAnchorWorld, isLeftHand = true) => {
       if (!handPoints || handPoints.length < 21 || !wristAnchorWorld) return null;
 
       const handWristRaw = handPoints[0];
       const handWorld = [];
+
+      // 2D Chirality calculation (Wrist 0, Index MCP 5, Pinky MCP 17, Middle MCP 9)
+      const palmVecX = handPoints[9][0] - handWristRaw[0];
+      const palmVecY = handPoints[9][1] - handWristRaw[1];
+      const knuckleVecX = handPoints[5][0] - handPoints[17][0];
+      const knuckleVecY = handPoints[5][1] - handPoints[17][1];
+      const palmWidth2D = Math.hypot(palmVecX, palmVecY) + 1e-5;
+
+      const chirality = (palmVecX * knuckleVecY - palmVecY * knuckleVecX) / (palmWidth2D * palmWidth2D);
+      const sideSign = isLeftHand ? 1 : -1;
+      const facingFactor = THREE.MathUtils.clamp(chirality * sideSign * 2.8, -1.0, 1.0);
+      const sidewaysFactor = Math.sqrt(Math.max(0.0, 1.0 - facingFactor * facingFactor));
 
       // Palm transverse arch depth offsets relative to wrist
       const mcpArchOffsets = {
@@ -329,6 +341,9 @@ export class SkeletonOverlay {
         13: 0.015, // Ring MCP
         17: 0.005  // Pinky MCP
       };
+
+      // Knuckle 3D depth offset when turning sideways
+      const knuckleZOffset = sidewaysFactor * (isLeftHand ? -1 : 1) * Math.sign(palmVecY || 1) * 0.035;
 
       // Finger chain definitions [MCP, PIP, DIP, TIP]
       const fingerChains = [
@@ -353,6 +368,11 @@ export class SkeletonOverlay {
         fingerCurled[mcp] = curl;
       });
 
+      // Direction of inward palm curl along Z:
+      // When facingFactor > 0 (palm facing camera): curls +Z
+      // When facingFactor < 0 (back of hand facing camera): curls -Z (toward chest)
+      const curlZDir = facingFactor >= 0 ? 1.0 : -1.0;
+
       // Compute 3D world positions with volumetric palm arch and circular finger curl arcs
       for (let i = 0; i < 21; i++) {
         const pt = handPoints[i];
@@ -364,29 +384,36 @@ export class SkeletonOverlay {
 
         // Arch offset
         if (mcpArchOffsets[i]) {
-          relZ += mcpArchOffsets[i];
+          relZ += mcpArchOffsets[i] * Math.max(0.3, Math.abs(facingFactor));
         }
 
-        // Forward circular arc for curling fingers
+        // Sideways knuckle separation in 3D
+        if (i === 5 || i === 6 || i === 7 || i === 8) {
+          relZ += knuckleZOffset;
+        } else if (i === 17 || i === 18 || i === 19 || i === 20) {
+          relZ -= knuckleZOffset;
+        }
+
+        // Forward/backward circular arc for curling fingers along inner palm normal
         fingerChains.forEach((chain) => {
           const [mcp, pip, dip, tip] = chain;
           const curl = fingerCurled[mcp] || 0;
-          const baseMcpZ = mcpArchOffsets[mcp] || 0.015;
+          const baseMcpZ = (mcpArchOffsets[mcp] || 0.015) * Math.max(0.3, Math.abs(facingFactor));
 
           if (i === pip) {
-            relZ = baseMcpZ + Math.sin(curl * 1.2) * 0.025;
+            relZ = baseMcpZ + Math.sin(curl * 1.2) * 0.025 * curlZDir;
           } else if (i === dip) {
-            relZ = baseMcpZ + Math.sin(curl * 1.8) * 0.040;
+            relZ = baseMcpZ + Math.sin(curl * 1.8) * 0.040 * curlZDir;
           } else if (i === tip) {
-            relZ = baseMcpZ + Math.sin(curl * 2.4) * 0.035;
+            relZ = baseMcpZ + Math.sin(curl * 2.4) * 0.035 * curlZDir;
           }
         });
 
         // Thumb forward curl arc (Points 3, 4)
         if (i === 3) {
-          relZ = 0.035;
+          relZ = 0.035 * curlZDir;
         } else if (i === 4) {
-          relZ = 0.030;
+          relZ = 0.030 * curlZDir;
         }
 
         const w = new THREE.Vector3(
@@ -411,12 +438,12 @@ export class SkeletonOverlay {
 
     let leftHandWorld = null;
     if (leftHand && poseWorld[5]) {
-      leftHandWorld = renderHandVolumetric(leftHand, poseWorld[5]);
+      leftHandWorld = renderHandVolumetric(leftHand, poseWorld[5], true);
     }
 
     let rightHandWorld = null;
     if (rightHand && poseWorld[6]) {
-      rightHandWorld = renderHandVolumetric(rightHand, poseWorld[6]);
+      rightHandWorld = renderHandVolumetric(rightHand, poseWorld[6], false);
     }
 
     // Update GPU buffers
