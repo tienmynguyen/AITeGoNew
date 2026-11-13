@@ -209,32 +209,35 @@ export class VRMEngine {
       }
     }
 
-    // 2. Auto-calibrate Thumb opposition on each hand
+    // 2. Auto-calibrate Thumb opposition & flexion on each hand
     for (const side of sides) {
       const thumbProx = this.bones[`${side}ThumbProximal`] || this.bones[`${side}ThumbMetacarpal`];
+      const thumbInter = this.bones[`${side}ThumbIntermediate`];
       const thumbDist = this.bones[`${side}ThumbDistal`];
       const pinkyProx = this.bones[`${side}LittleProximal`] || this.bones[`${side}IndexProximal`];
 
       if (!thumbProx || !thumbDist || !pinkyProx) continue;
 
+      const targetPos = pinkyProx.getWorldPosition(new THREE.Vector3());
+
+      const testAxes = [
+        { name: 'y', vec: new THREE.Vector3(0, 1, 0) },
+        { name: 'z', vec: new THREE.Vector3(0, 0, 1) },
+        { name: 'x', vec: new THREE.Vector3(1, 0, 0) }
+      ];
+
+      // A. Calibrate ThumbProximal (opposition across palm toward pinky)
       thumbProx.quaternion.copy(thumbProx.userData.restLocalQuat);
-      if (thumbDist.userData.restLocalQuat) thumbDist.quaternion.copy(thumbDist.userData.restLocalQuat);
+      if (thumbInter) thumbInter.quaternion.copy(thumbInter.userData.restLocalQuat);
+      thumbDist.quaternion.copy(thumbDist.userData.restLocalQuat);
       vrm.scene.updateMatrixWorld(true);
 
-      const targetPos = pinkyProx.getWorldPosition(new THREE.Vector3());
       const restDist = thumbDist.getWorldPosition(new THREE.Vector3()).distanceTo(targetPos);
       const restY = thumbDist.getWorldPosition(new THREE.Vector3()).y;
 
       let bestScore = -Infinity;
       let bestAxis = 'y';
       let bestSign = 1;
-
-      // Test axes: 'y', 'z', 'x' with +0.4 and -0.4 rad
-      const testAxes = [
-        { name: 'y', vec: new THREE.Vector3(0, 1, 0) },
-        { name: 'z', vec: new THREE.Vector3(0, 0, 1) },
-        { name: 'x', vec: new THREE.Vector3(1, 0, 0) }
-      ];
 
       for (const axis of testAxes) {
         for (const testSign of [1, -1]) {
@@ -246,7 +249,6 @@ export class VRMEngine {
           const curDist = curPos.distanceTo(targetPos);
           const curY = curPos.y;
 
-          // Opposition score: moves across palm closer to pinky (restDist - curDist) and downward (restY - curY)
           const distImprovement = (restDist - curDist);
           const yDrop = (restY - curY);
           const score = distImprovement * 2.0 + yDrop;
@@ -261,17 +263,64 @@ export class VRMEngine {
 
       thumbProx.userData.curlAxis = bestAxis;
       thumbProx.userData.curlSign = bestSign;
-      if (thumbDist) {
+      thumbProx.quaternion.copy(thumbProx.userData.restLocalQuat);
+      vrm.scene.updateMatrixWorld(true);
+
+      // B. Calibrate ThumbIntermediate & ThumbDistal (flexion into the palm)
+      if (thumbInter) {
+        let bestInterScore = -Infinity;
+        let bestInterAxis = 'z';
+        let bestInterSign = 1;
+
+        thumbInter.quaternion.copy(thumbInter.userData.restLocalQuat);
+        thumbDist.quaternion.copy(thumbDist.userData.restLocalQuat);
+        vrm.scene.updateMatrixWorld(true);
+
+        const restInterDist = thumbDist.getWorldPosition(new THREE.Vector3()).distanceTo(targetPos);
+        const restInterY = thumbDist.getWorldPosition(new THREE.Vector3()).y;
+
+        for (const axis of testAxes) {
+          for (const testSign of [1, -1]) {
+            const qTest = new THREE.Quaternion().setFromAxisAngle(axis.vec, testSign * 0.4);
+            thumbInter.quaternion.copy(thumbInter.userData.restLocalQuat).multiply(qTest);
+            vrm.scene.updateMatrixWorld(true);
+
+            const curPos = thumbDist.getWorldPosition(new THREE.Vector3());
+            const curDist = curPos.distanceTo(targetPos);
+            const curY = curPos.y;
+
+            const distImprovement = (restInterDist - curDist);
+            const yDrop = (restInterY - curY);
+            const score = distImprovement * 2.0 + yDrop;
+
+            if (score > bestInterScore) {
+              bestInterScore = score;
+              bestInterAxis = axis.name;
+              bestInterSign = testSign;
+            }
+          }
+        }
+
+        thumbInter.userData.curlAxis = bestInterAxis;
+        thumbInter.userData.curlSign = bestInterSign;
+        thumbInter.quaternion.copy(thumbInter.userData.restLocalQuat);
+
+        thumbDist.userData.curlAxis = bestInterAxis;
+        thumbDist.userData.curlSign = bestInterSign;
+        thumbDist.quaternion.copy(thumbDist.userData.restLocalQuat);
+        vrm.scene.updateMatrixWorld(true);
+      } else {
         thumbDist.userData.curlAxis = bestAxis;
         thumbDist.userData.curlSign = bestSign;
       }
 
       // Restore rest
       thumbProx.quaternion.copy(thumbProx.userData.restLocalQuat);
-      if (thumbDist.userData.restLocalQuat) thumbDist.quaternion.copy(thumbDist.userData.restLocalQuat);
+      if (thumbInter) thumbInter.quaternion.copy(thumbInter.userData.restLocalQuat);
+      thumbDist.quaternion.copy(thumbDist.userData.restLocalQuat);
       vrm.scene.updateMatrixWorld(true);
 
-      console.log(`[AutoCalibrate] ${side}Thumb curlAxis: ${bestAxis}, sign: ${bestSign} (score: ${bestScore.toFixed(4)})`);
+      console.log(`[AutoCalibrate] ${side}ThumbProx curlAxis: ${bestAxis}, sign: ${bestSign}; ThumbInter curlAxis: ${thumbInter?.userData?.curlAxis}, sign: ${thumbInter?.userData?.curlSign}`);
     }
   }
 
@@ -386,7 +435,7 @@ export class VRMEngine {
   relaxFingers(side, dt = 0.016) {
     const isLeft = side === 'left';
     const prefix = isLeft ? 'left' : 'right';
-    const fingerNames = ['Index', 'Middle', 'Ring', 'Little', 'Thumb'];
+    const fingerNames = ['Index', 'Middle', 'Ring', 'Little'];
     const alphaRelax = 1.0 - Math.exp(-8.0 * dt);
 
     for (const f of fingerNames) {
@@ -395,8 +444,6 @@ export class VRMEngine {
         const node = this.bones[boneKey];
         if (node && node.userData.restLocalQuat) {
           node.userData.smoothedCurl = 0;
-          node.userData.smoothedFold = 0;
-          node.userData.smoothedOpen = 1;
           const signZ = node.userData.curlSignZ !== undefined ? node.userData.curlSignZ : (isLeft ? 1 : -1);
           // 5 degrees micro-curve inward so fingers never hyperextend backward
           const relaxedCurve = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), signZ * 0.08);
@@ -405,6 +452,43 @@ export class VRMEngine {
           node.updateMatrixWorld(true);
         }
       }
+    }
+
+    // Natural rest posture for thumb (soft inward posture toward palm, not sticking out)
+    const thumbProx = this.bones[`${prefix}ThumbProximal`];
+    const thumbInter = this.bones[`${prefix}ThumbIntermediate`];
+    const thumbDist = this.bones[`${prefix}ThumbDistal`];
+
+    if (thumbProx && thumbProx.userData.restLocalQuat) {
+      thumbProx.userData.smoothedFold = 0.6;
+      thumbProx.userData.smoothedOpen = 0.4;
+      const axisName = thumbProx.userData.curlAxis || 'y';
+      const sign = thumbProx.userData.curlSign !== undefined ? thumbProx.userData.curlSign : (isLeft ? -1 : 1);
+      const axisVec = axisName === 'z' ? new THREE.Vector3(0, 0, 1) :
+                      axisName === 'x' ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
+      const qRelaxProx = new THREE.Quaternion().setFromAxisAngle(axisVec, sign * 0.35);
+      thumbProx.quaternion.slerp(thumbProx.userData.restLocalQuat.clone().multiply(qRelaxProx), alphaRelax);
+      thumbProx.updateMatrixWorld(true);
+    }
+
+    if (thumbInter && thumbInter.userData.restLocalQuat) {
+      const axisName = thumbInter.userData.curlAxis || 'z';
+      const sign = thumbInter.userData.curlSign !== undefined ? thumbInter.userData.curlSign : (isLeft ? 1 : -1);
+      const axisVec = axisName === 'z' ? new THREE.Vector3(0, 0, 1) :
+                      axisName === 'x' ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
+      const qRelaxInter = new THREE.Quaternion().setFromAxisAngle(axisVec, sign * 0.45);
+      thumbInter.quaternion.slerp(thumbInter.userData.restLocalQuat.clone().multiply(qRelaxInter), alphaRelax);
+      thumbInter.updateMatrixWorld(true);
+    }
+
+    if (thumbDist && thumbDist.userData.restLocalQuat) {
+      const axisName = thumbInter?.userData?.curlAxis || 'z';
+      const sign = thumbInter?.userData?.curlSign !== undefined ? thumbInter.userData.curlSign : (isLeft ? 1 : -1);
+      const axisVec = axisName === 'z' ? new THREE.Vector3(0, 0, 1) :
+                      axisName === 'x' ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
+      const qRelaxDist = new THREE.Quaternion().setFromAxisAngle(axisVec, sign * 0.40);
+      thumbDist.quaternion.slerp(thumbDist.userData.restLocalQuat.clone().multiply(qRelaxDist), alphaRelax);
+      thumbDist.updateMatrixWorld(true);
     }
   }
 
@@ -675,35 +759,48 @@ export class VRMEngine {
       }
     }
 
-    // 6. Anatomical Thumb Solver (Opposition & Abduction)
+    // 6. Anatomical Thumb Solver (Opposition, Flexion & Abduction)
     const pThumbMcp = skelHandWorld[2];
-    const pThumbCmc = skelHandWorld[1];
-    const vThumb1 = pThumbMcp.clone().sub(pThumbCmc).normalize();
-    const vThumb2 = pThumbTip.clone().sub(pThumbMcp).normalize();
-    const thumbBendAngle = vThumb1.angleTo(vThumb2);
+    const pIndexMcp = skelHandWorld[5];
+    const dThumbIndex = pThumbTip.distanceTo(pIndexMcp) / palmLen;
 
-    let rawThumbFold = 0.0;
-    let rawThumbOpen = 1.0;
+    // Detection of Thumb Extension Exceptions:
+    // User rule: In most words the thumb is curled/folded (nắm), EXCEPT 6 to 9 and a few specific words.
+    // 1. Number 6: Index straight, Middle/Ring/Little curled, Thumb abducted from index
+    const isNum6 = (idxM.isStraight || idxM.rawCurl < 0.25) && midM.isCurled && ringM.isCurled && litM.isCurled && (dThumbIndex > 0.45) && (dThumbPinky > 0.85);
 
-    if (isNumber4 || ((isNumber2 || isNumber3) && dThumbPinky < 0.48)) {
-      // Tightly tucked across palm for numbers 2, 3, 4
-      rawThumbFold = 0.95;
-      rawThumbOpen = 0.05;
-    } else if (isIndexPointing) {
-      // Pointing sign ("Bạn", Number 1): thumb rests naturally alongside curled fingers
-      rawThumbFold = 0.22;
-      rawThumbOpen = 0.45;
-    } else if (dThumbPinky > 0.95 || thumbBendAngle < 0.35) {
-      // Extended thumb ("Tốt" thumbs up, sweeping "Bọn họ", numbers 5, 6, 7, 8)
-      rawThumbFold = 0.05;
-      rawThumbOpen = 0.95;
-    } else {
-      // Intermediate fold based on distance to pinky knuckle
-      rawThumbOpen = THREE.MathUtils.clamp((dThumbPinky - 0.35) / 0.55, 0.0, 1.0);
-      rawThumbFold = 1.0 - rawThumbOpen;
+    // 2. Number 7: Index + Middle straight, Ring + Little curled, Thumb abducted from index
+    const isNum7 = (idxM.isStraight || idxM.rawCurl < 0.25) && (midM.isStraight || midM.rawCurl < 0.25) && ringM.isCurled && litM.isCurled && (dThumbIndex > 0.45) && (dThumbPinky > 0.85);
+
+    // 3. Number 8: Index + Middle + Ring straight, Little curled, Thumb abducted
+    const isNum8 = (idxM.isStraight || idxM.rawCurl < 0.25) && (midM.isStraight || midM.rawCurl < 0.25) && (ringM.isStraight || ringM.rawCurl < 0.25) && litM.isCurled && (dThumbIndex > 0.45) && (dThumbPinky > 0.75);
+
+    // 4. Number 9 / 10 / all-straight open hand with wide thumb: 4 fingers straight AND thumb spread far
+    const isAllOpen = (idxM.isStraight || idxM.rawCurl < 0.25) && 
+                      (midM.isStraight || midM.rawCurl < 0.25) && 
+                      (ringM.isStraight || ringM.rawCurl < 0.25) && 
+                      (litM.isStraight || litM.rawCurl < 0.25) &&
+                      (dThumbPinky > 0.70) && (dThumbIndex > 0.45);
+
+    // 5. Thumbs Up ("Tốt"): 4 fingers curled into a fist, thumb pointing UP with high distance to pinky
+    const isThumbsUp = (curledCount >= 3) && (dThumbPinky > 1.25) && (pThumbTip.y > pThumbMcp.y);
+
+    // 6. ILY sign ("Yêu"): Index straight, Little straight, Middle & Ring curled, Thumb abducted
+    const isILY = (idxM.isStraight || idxM.rawCurl < 0.25) && (litM.isStraight || litM.rawCurl < 0.25) && midM.isCurled && ringM.isCurled && (dThumbPinky > 1.20);
+
+    const isThumbExtended = isNum6 || isNum7 || isNum8 || isAllOpen || isThumbsUp || isILY;
+
+    // Default: thumb is FOLDED / NẮM for almost all words (1, 2, 3, 4, Bạn, Tôi, fists, etc.)
+    let rawThumbFold = 1.0;
+    let rawThumbOpen = 0.0;
+
+    if (isThumbExtended) {
+      rawThumbFold = 0.0;
+      rawThumbOpen = 1.0;
     }
 
     const thumbProx = this.bones[`${prefix}ThumbProximal`] || this.bones[`${prefix}ThumbMetacarpal`];
+    const thumbInter = this.bones[`${prefix}ThumbIntermediate`];
     const thumbDistNode = this.bones[`${prefix}ThumbDistal`];
 
     if (thumbProx && thumbProx.userData.restLocalQuat) {
@@ -724,28 +821,44 @@ export class VRMEngine {
       const sFold = THREE.MathUtils.clamp(thumbProx.userData.smoothedFold, 0.0, 1.0);
       const sOpen = THREE.MathUtils.clamp(thumbProx.userData.smoothedOpen, 0.0, 1.0);
 
-      const curlAxisName = thumbProx.userData.curlAxis || 'y';
-      const curlSign = thumbProx.userData.curlSign !== undefined ? thumbProx.userData.curlSign : (isLeft ? -1 : 1);
+      const axisName = thumbProx.userData.curlAxis || 'y';
+      const sign = thumbProx.userData.curlSign !== undefined ? thumbProx.userData.curlSign : (isLeft ? -1 : 1);
+      const axisVec = axisName === 'z' ? new THREE.Vector3(0, 0, 1) :
+                      axisName === 'x' ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
 
-      const axisVec = curlAxisName === 'z' ? new THREE.Vector3(0, 0, 1) :
-                      curlAxisName === 'x' ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
-
-      // Inward fold using calibrated axis & sign
-      const qFold = new THREE.Quaternion().setFromAxisAngle(axisVec, curlSign * (sFold * 0.80));
-      const qAbduct = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), curlSign * (sOpen * 0.35 - sFold * 0.25));
+      // Inward opposition across palm + abduction
+      const qFold = new THREE.Quaternion().setFromAxisAngle(axisVec, sign * (sFold * 0.75));
+      const qAbduct = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), sign * (sOpen * 0.35 - sFold * 0.30));
 
       const targetProx = thumbProx.userData.restLocalQuat.clone().multiply(qFold).multiply(qAbduct);
       thumbProx.quaternion.slerp(targetProx, fingerAlpha);
       thumbProx.updateMatrixWorld(true);
-    }
 
-    if (thumbDistNode && thumbDistNode.userData.restLocalQuat) {
-      const sFold = thumbProx?.userData?.smoothedFold !== undefined ? thumbProx.userData.smoothedFold : rawThumbFold;
-      const signZ = thumbProx?.userData?.curlSignZ !== undefined ? thumbProx.userData.curlSignZ : (isLeft ? 1 : -1);
-      const qTip = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), signZ * (sFold * 0.75 + 0.05));
-      const targetDist = thumbDistNode.userData.restLocalQuat.clone().multiply(qTip);
-      thumbDistNode.quaternion.slerp(targetDist, fingerAlpha);
-      thumbDistNode.updateMatrixWorld(true);
+      // Intermediate thumb bone (Thumb2 MCP flexion into the palm)
+      if (thumbInter && thumbInter.userData.restLocalQuat) {
+        const interAxisName = thumbInter.userData.curlAxis || 'z';
+        const interSign = thumbInter.userData.curlSign !== undefined ? thumbInter.userData.curlSign : sign;
+        const interAxisVec = interAxisName === 'z' ? new THREE.Vector3(0, 0, 1) :
+                             interAxisName === 'x' ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
+
+        const qFoldInter = new THREE.Quaternion().setFromAxisAngle(interAxisVec, interSign * (sFold * 0.90));
+        const targetInter = thumbInter.userData.restLocalQuat.clone().multiply(qFoldInter);
+        thumbInter.quaternion.slerp(targetInter, fingerAlpha);
+        thumbInter.updateMatrixWorld(true);
+      }
+
+      // Distal thumb bone (Thumb3 IP flexion / clamping)
+      if (thumbDistNode && thumbDistNode.userData.restLocalQuat) {
+        const distAxisName = thumbInter?.userData?.curlAxis || thumbDistNode.userData.curlAxis || 'z';
+        const distSign = thumbInter?.userData?.curlSign !== undefined ? thumbInter.userData.curlSign : sign;
+        const distAxisVec = distAxisName === 'z' ? new THREE.Vector3(0, 0, 1) :
+                            distAxisName === 'x' ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
+
+        const qTip = new THREE.Quaternion().setFromAxisAngle(distAxisVec, distSign * (sFold * 0.85 + 0.05));
+        const targetDist = thumbDistNode.userData.restLocalQuat.clone().multiply(qTip);
+        thumbDistNode.quaternion.slerp(targetDist, fingerAlpha);
+        thumbDistNode.updateMatrixWorld(true);
+      }
     }
   }
 
