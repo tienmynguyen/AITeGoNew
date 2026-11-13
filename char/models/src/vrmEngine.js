@@ -649,46 +649,64 @@ export class VRMEngine {
 
     const curledCount = (idxM.isCurled ? 1 : 0) + (midM.isCurled ? 1 : 0) + (ringM.isCurled ? 1 : 0) + (litM.isCurled ? 1 : 0);
 
-    // Pointing detection (Sign "Bạn", Number 1): Index straight, Middle/Ring/Little curled
-    const isIndexPointing = (idxM.isStraight || idxM.rawCurl < 0.25) && midM.isCurled && ringM.isCurled && litM.isCurled;
+    // Robust high-level gesture classification:
+    // Case A: Number 3 / Number 8 (Index, Middle, Ring straight, Little curled)
+    const isNumber3 = (idxM.isStraight || idxM.rawCurl < 0.25) && 
+                      (midM.isStraight || midM.rawCurl < 0.25) && 
+                      (ringM.isStraight || ringM.rawCurl < 0.25) && 
+                      (!litM.isStraight);
 
-    // Number 2 detection: Index + Middle straight, Ring + Little curled
-    const isNumber2 = (idxM.isStraight || idxM.rawCurl < 0.25) && (midM.isStraight || midM.rawCurl < 0.25) && ringM.isCurled && litM.isCurled;
+    // Case B: Number 2 / "Chúng tôi" / Number 7 (Index + Middle straight, Ring & Little curled)
+    const isNumber2 = (idxM.isStraight || idxM.rawCurl < 0.25) && 
+                      (midM.isStraight || midM.rawCurl < 0.25) && 
+                      (!ringM.isStraight) && (!litM.isStraight);
 
-    // Number 3 detection: Index + Middle + Ring straight, Little curled
-    const isNumber3 = (idxM.isStraight || idxM.rawCurl < 0.25) && (midM.isStraight || midM.rawCurl < 0.25) && (ringM.isStraight || ringM.rawCurl < 0.25) && litM.isCurled;
+    // Case C: Pointing / "Bạn" / "Tôi" / Number 1 / Number 6 (Index straight, Middle, Ring, Little curled)
+    const isIndexPointing = (idxM.isStraight || idxM.rawCurl < 0.25) && 
+                            (!midM.isStraight) && (!ringM.isStraight) && (!litM.isStraight);
 
-    // Number 4 detection: 4 fingers straight, thumb tucked
+    // Case D: Number 4 (all 4 fingers straight, thumb tucked across palm)
     const pThumbTip = skelHandWorld[4];
     const pPinkyMcp = skelHandWorld[17];
     const dThumbPinky = pThumbTip.distanceTo(pPinkyMcp) / palmLen;
-    const isNumber4 = (idxM.isStraight || idxM.rawCurl < 0.25) && (midM.isStraight || midM.rawCurl < 0.25) && (ringM.isStraight || ringM.rawCurl < 0.25) && (litM.isStraight || litM.rawCurl < 0.25) && (dThumbPinky < 0.55);
+    const isNumber4 = (idxM.isStraight || idxM.rawCurl < 0.25) && 
+                      (midM.isStraight || midM.rawCurl < 0.25) && 
+                      (ringM.isStraight || ringM.rawCurl < 0.25) && 
+                      (litM.isStraight || litM.rawCurl < 0.25) && 
+                      (dThumbPinky < 0.55);
 
-    if (isIndexPointing) {
+    if (isNumber3) {
       idxM.rawCurl = 0.0;
-      midM.rawCurl = 1.0;
-      ringM.rawCurl = 1.0;
+      midM.rawCurl = 0.0;
+      ringM.rawCurl = 0.0;
       litM.rawCurl = 1.0;
+      litM.isLockedCurled = true;
     } else if (isNumber2) {
       idxM.rawCurl = 0.0;
       midM.rawCurl = 0.0;
       ringM.rawCurl = 1.0;
       litM.rawCurl = 1.0;
-    } else if (isNumber3) {
+      ringM.isLockedCurled = true;
+      litM.isLockedCurled = true;
+    } else if (isIndexPointing) {
       idxM.rawCurl = 0.0;
-      midM.rawCurl = 0.0;
-      ringM.rawCurl = 0.0;
+      midM.rawCurl = 1.0;
+      ringM.rawCurl = 1.0;
       litM.rawCurl = 1.0;
+      midM.isLockedCurled = true;
+      ringM.isLockedCurled = true;
+      litM.isLockedCurled = true;
     } else if (isNumber4) {
       idxM.rawCurl = 0.0;
       midM.rawCurl = 0.0;
       ringM.rawCurl = 0.0;
       litM.rawCurl = 0.0;
     } else if (curledCount >= 3) {
-      // Clenched fist (e.g. "Tốt", fists): snap any bent finger to 1.0 for tight uniform fist
+      // Clenched fist (e.g. "Tốt", fists): snap any bent finger to 1.0 and lock it
       for (const f of fingerDefs) {
-        if (fingerMetrics[f.name].rawCurl > 0.35) {
+        if (fingerMetrics[f.name].rawCurl > 0.35 || fingerMetrics[f.name].isCurled) {
           fingerMetrics[f.name].rawCurl = 1.0;
+          fingerMetrics[f.name].isLockedCurled = true;
         }
       }
     }
@@ -702,13 +720,17 @@ export class VRMEngine {
 
       if (!proxNode) continue;
 
-      // Deadzone + Exponential Low-Pass filter on curl amount:
-      if (proxNode.userData.smoothedCurl === undefined) {
-        proxNode.userData.smoothedCurl = m.rawCurl;
+      // Lock curled fingers with zero jitter
+      if (m.isLockedCurled) {
+        proxNode.userData.smoothedCurl = 1.0;
       } else {
-        const prevCurl = proxNode.userData.smoothedCurl;
-        if (Math.abs(m.rawCurl - prevCurl) > 0.02) {
-          proxNode.userData.smoothedCurl = prevCurl + (m.rawCurl - prevCurl) * (1.0 - Math.exp(-12.0 * dt));
+        if (proxNode.userData.smoothedCurl === undefined) {
+          proxNode.userData.smoothedCurl = m.rawCurl;
+        } else {
+          const prevCurl = proxNode.userData.smoothedCurl;
+          if (Math.abs(m.rawCurl - prevCurl) > 0.02) {
+            proxNode.userData.smoothedCurl = prevCurl + (m.rawCurl - prevCurl) * (1.0 - Math.exp(-12.0 * dt));
+          }
         }
       }
       const smoothCurl = THREE.MathUtils.clamp(proxNode.userData.smoothedCurl, 0.0, 1.0);
@@ -716,22 +738,21 @@ export class VRMEngine {
       const signZ = proxNode.userData.curlSignZ !== undefined ? proxNode.userData.curlSignZ : (isLeft ? 1 : -1);
 
       // Anatomical flexion angles:
-      // When smoothCurl == 1.0 (clenched fist):
-      // Proximal: ~78° (1.36 rad)
-      // Intermediate: ~96° (1.68 rad)
-      // Distal: ~73° (1.28 rad)
-      // When smoothCurl == 0.0 (straight extended):
-      // 0.05 rad (~3° natural straight micro-curvature)
       const finalFlexProx = 0.05 + smoothCurl * 1.35;
       const finalFlexInter = 0.05 + smoothCurl * 1.63;
       const finalFlexDist = 0.05 + smoothCurl * 1.23;
 
-      // Knuckle plane splay (eliminated when fist is clenched):
-      const vProx = m.pPip.clone().sub(m.pMcp).normalize();
-      const dotSplay = vProx.dot(knucklePlaneDir);
-      const dotAxisProx = vProx.dot(axisX);
-      const rawSplay = Math.atan2(dotSplay, Math.max(0.01, dotAxisProx));
-      const finalSplay = (1.0 - smoothCurl) * THREE.MathUtils.clamp(rawSplay, -0.25, 0.25);
+      // Knuckle plane splay: STRICTLY 0.0 when finger is curled or locked!
+      // Completely eliminates lateral swinging / fluttering / đung đưa on the little finger and all curled fingers!
+      let finalSplay = 0.0;
+      if (!m.isLockedCurled && smoothCurl < 0.35) {
+        const vProx = m.pPip.clone().sub(m.pMcp).normalize();
+        const dotSplay = vProx.dot(knucklePlaneDir);
+        const dotAxisProx = vProx.dot(axisX);
+        const rawSplay = Math.atan2(dotSplay, Math.max(0.01, dotAxisProx));
+        const splayWeight = 1.0 - smoothCurl / 0.35;
+        finalSplay = splayWeight * THREE.MathUtils.clamp(rawSplay, -0.15, 0.15);
+      }
 
       // Proximal Bone Rotation (Flexion + Splay):
       if (proxNode.userData.restLocalQuat) {
