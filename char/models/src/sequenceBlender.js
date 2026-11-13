@@ -274,9 +274,79 @@ export class SequenceBlender {
   }
 
   getCurrentFrame() {
-    if (this.blendedFrames.length === 0) return null;
-    const idx = Math.floor(this.currentFrameIdx) % this.blendedFrames.length;
-    return this.blendedFrames[idx].frame;
+    const len = this.blendedFrames.length;
+    if (len === 0) return null;
+    if (len === 1) return this.blendedFrames[0].frame;
+
+    const floatIdx = ((this.currentFrameIdx % len) + len) % len;
+    const idxA = Math.floor(floatIdx);
+    const idxB = (idxA + 1) % len;
+    const alpha = floatIdx - idxA;
+
+    const frameA = this.blendedFrames[idxA].frame;
+    const frameB = this.blendedFrames[idxB].frame;
+
+    if (!frameA || !frameB || alpha < 0.001) return frameA;
+    if (alpha > 0.999) return frameB;
+
+    // Smoothstep interpolation factor for continuous, stutter-free playback
+    const t = alpha * alpha * (3 - 2 * alpha);
+
+    // 1. Interpolate Pose
+    const poseA = frameA.pose || [];
+    const poseB = frameB.pose || [];
+    const pose = [];
+    for (let i = 0; i < 8; i++) {
+      const pA = poseA[i] || [0, 0, 0];
+      const pB = poseB[i] || [0, 0, 0];
+      pose.push([
+        pA[0] * (1 - t) + pB[0] * t,
+        pA[1] * (1 - t) + pB[1] * t,
+        pA[2] * (1 - t) + pB[2] * t
+      ]);
+    }
+
+    // 2. Interpolate Left Hand
+    let leftHand = null;
+    if (frameA.leftHand && frameB.leftHand) {
+      leftHand = [];
+      for (let i = 0; i < 21; i++) {
+        const hA = frameA.leftHand[i];
+        const hB = frameB.leftHand[i];
+        leftHand.push([
+          hA[0] * (1 - t) + hB[0] * t,
+          hA[1] * (1 - t) + hB[1] * t,
+          hA[2] * (1 - t) + hB[2] * t
+        ]);
+      }
+    } else {
+      leftHand = t < 0.5 ? frameA.leftHand : frameB.leftHand;
+    }
+
+    // 3. Interpolate Right Hand
+    let rightHand = null;
+    if (frameA.rightHand && frameB.rightHand) {
+      rightHand = [];
+      for (let i = 0; i < 21; i++) {
+        const hA = frameA.rightHand[i];
+        const hB = frameB.rightHand[i];
+        rightHand.push([
+          hA[0] * (1 - t) + hB[0] * t,
+          hA[1] * (1 - t) + hB[1] * t,
+          hA[2] * (1 - t) + hB[2] * t
+        ]);
+      }
+    } else {
+      rightHand = t < 0.5 ? frameA.rightHand : frameB.rightHand;
+    }
+
+    return {
+      frameIndex: idxA,
+      pose,
+      leftHand,
+      rightHand,
+      activeHandSide: t < 0.5 ? frameA.activeHandSide : frameB.activeHandSide
+    };
   }
 
   getCurrentItem() {

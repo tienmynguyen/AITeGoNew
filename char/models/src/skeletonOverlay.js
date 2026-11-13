@@ -80,6 +80,22 @@ export class SkeletonOverlay {
     this.group.add(this.jointMesh);
 
     this.dummyTransform = new THREE.Object3D();
+
+    // Temporal smoothing cache to filter landmark micro-jitter
+    this.smoothCache = {
+      pose: {},
+      lh: {},
+      rh: {}
+    };
+  }
+
+  smoothVec(map, key, target, alpha = 0.55) {
+    if (!map[key]) {
+      map[key] = target.clone();
+    } else {
+      map[key].lerp(target, alpha);
+    }
+    return map[key].clone();
   }
 
   setVisible(visible) {
@@ -199,30 +215,35 @@ export class SkeletonOverlay {
         const d2D_lower = Math.hypot(nx_w - nx_e, ny_w - ny_e) * this.scale;
 
         const isRaised = ny_w < 0.6 || Math.abs(nx_w) < 0.65;
-        let elbowForwardZ = isRaised
-          ? Math.max(0.06, Math.sqrt(Math.max(0, L_upper * L_upper - d2D_upper * d2D_upper)) * 0.65)
-          : 0.02;
-        let wristForwardZ = isRaised
-          ? elbowForwardZ + Math.max(0.10, Math.sqrt(Math.max(0, L_lower * L_lower - d2D_lower * d2D_lower)) * 0.85)
-          : 0.04;
+        // Bounded forward kinematics: cap extension ratio at 0.92 to prevent sqrt derivative explosion
+        const extUpper = Math.min(0.92, d2D_upper / L_upper);
+        const fwdUpper = Math.sqrt(Math.max(0.0, 1.0 - extUpper * extUpper)) * L_upper;
+        const extLower = Math.min(0.92, d2D_lower / L_lower);
+        const fwdLower = Math.sqrt(Math.max(0.0, 1.0 - extLower * extLower)) * L_lower;
 
-        const worldElbowL = new THREE.Vector3(
+        let elbowForwardZ = isRaised ? Math.max(0.06, fwdUpper * 0.65) : 0.02;
+        let wristForwardZ = isRaised ? elbowForwardZ + Math.max(0.10, fwdLower * 0.85) : 0.04;
+
+        const rawElbowL = new THREE.Vector3(
           this.anchor.x + signX * nx_e * this.scale,
           this.anchor.y - ny_e * this.scale,
           this.anchor.z + elbowForwardZ
         );
 
-        const worldWristL = new THREE.Vector3(
+        const rawWristL = new THREE.Vector3(
           this.anchor.x + signX * nx_w * this.scale,
           this.anchor.y - ny_w * this.scale,
           this.anchor.z + wristForwardZ
         );
 
         // Anti-Torso-Clipping hard collision floor in front of chest/sweater
-        if (Math.abs(worldWristL.x) < 0.22 && worldWristL.y > 0.95) {
-          worldElbowL.z = Math.max(worldElbowL.z, this.anchor.z + 0.14);
-          worldWristL.z = Math.max(worldWristL.z, this.anchor.z + 0.22);
+        if (Math.abs(rawWristL.x) < 0.22 && rawWristL.y > 0.95) {
+          rawElbowL.z = Math.max(rawElbowL.z, this.anchor.z + 0.14);
+          rawWristL.z = Math.max(rawWristL.z, this.anchor.z + 0.22);
         }
+
+        const worldElbowL = this.smoothVec(this.smoothCache.pose, 'elbowL', rawElbowL, 0.50);
+        const worldWristL = this.smoothVec(this.smoothCache.pose, 'wristL', rawWristL, 0.50);
 
         poseWorld[3] = worldElbowL;
         poseWorld[5] = worldWristL;
@@ -245,30 +266,34 @@ export class SkeletonOverlay {
         const d2D_lower = Math.hypot(nx_w - nx_e, ny_w - ny_e) * this.scale;
 
         const isRaised = ny_w < 0.6 || Math.abs(nx_w) < 0.65;
-        let elbowForwardZ = isRaised
-          ? Math.max(0.06, Math.sqrt(Math.max(0, L_upper * L_upper - d2D_upper * d2D_upper)) * 0.65)
-          : 0.02;
-        let wristForwardZ = isRaised
-          ? elbowForwardZ + Math.max(0.10, Math.sqrt(Math.max(0, L_lower * L_lower - d2D_lower * d2D_lower)) * 0.85)
-          : 0.04;
+        const extUpper = Math.min(0.92, d2D_upper / L_upper);
+        const fwdUpper = Math.sqrt(Math.max(0.0, 1.0 - extUpper * extUpper)) * L_upper;
+        const extLower = Math.min(0.92, d2D_lower / L_lower);
+        const fwdLower = Math.sqrt(Math.max(0.0, 1.0 - extLower * extLower)) * L_lower;
 
-        const worldElbowR = new THREE.Vector3(
+        let elbowForwardZ = isRaised ? Math.max(0.06, fwdUpper * 0.65) : 0.02;
+        let wristForwardZ = isRaised ? elbowForwardZ + Math.max(0.10, fwdLower * 0.85) : 0.04;
+
+        const rawElbowR = new THREE.Vector3(
           this.anchor.x + signX * nx_e * this.scale,
           this.anchor.y - ny_e * this.scale,
           this.anchor.z + elbowForwardZ
         );
 
-        const worldWristR = new THREE.Vector3(
+        const rawWristR = new THREE.Vector3(
           this.anchor.x + signX * nx_w * this.scale,
           this.anchor.y - ny_w * this.scale,
           this.anchor.z + wristForwardZ
         );
 
         // Anti-Torso-Clipping hard collision floor in front of chest/sweater
-        if (Math.abs(worldWristR.x) < 0.22 && worldWristR.y > 0.95) {
-          worldElbowR.z = Math.max(worldElbowR.z, this.anchor.z + 0.14);
-          worldWristR.z = Math.max(worldWristR.z, this.anchor.z + 0.22);
+        if (Math.abs(rawWristR.x) < 0.22 && rawWristR.y > 0.95) {
+          rawElbowR.z = Math.max(rawElbowR.z, this.anchor.z + 0.14);
+          rawWristR.z = Math.max(rawWristR.z, this.anchor.z + 0.22);
         }
+
+        const worldElbowR = this.smoothVec(this.smoothCache.pose, 'elbowR', rawElbowR, 0.50);
+        const worldWristR = this.smoothVec(this.smoothCache.pose, 'wristR', rawWristR, 0.50);
 
         poseWorld[4] = worldElbowR;
         poseWorld[6] = worldWristR;
